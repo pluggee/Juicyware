@@ -388,9 +388,18 @@ void Network::init(void)
 void Network::on_main_loop(void *argument)
 {
     // issue commands here if any available
-    while(command_q->pop()) {
-        // keep feeding them until empty
-    }
+    // while(command_q->pop()) {
+    //     // keep feeding them until empty
+    // }
+
+    // issue one comamnd per iteration of main loop like USB serial does
+    command_q->pop();
+
+}
+
+extern "C" const char *get_query_string()
+{
+    return THEKERNEL->get_query_string().c_str();
 }
 
 // select between webserver and telnetd server

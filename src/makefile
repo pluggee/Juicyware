@@ -61,8 +61,25 @@ endif
 # include an optional default set of excludes
 # add any modules that you do not want included in the build
 # e.g for a CNC machine
-#export EXCLUDE_MODULES = tools/touchprobe tools/laser tools/temperaturecontrol tools/extruder
+#export EXCLUDE_MODULES = tools/laser tools/temperaturecontrol tools/extruder
 -include default_excludes.mk
+
+# override any default excludes by setting NODEFAULTEXCLUDES=1
+ifneq "$(NODEFAULTEXCLUDES)" "1"
+# if nothing set in the default_excludes.mk file then handle some default excludes for different builds
+
+ifeq "$(EXCLUDE_MODULES)" ""
+
+ifeq "$(CNC)" "1"
+# CNC build excludes these
+export EXCLUDE_MODULES = tools/filamentdetector tools/scaracal tools/temperaturecontrol tools/temperatureswitch tools/extruder
+else
+# 3D build excludes these
+export EXCLUDE_MODULES = tools/drillingcycles tools/spindle
+endif
+
+endif
+endif
 
 ifneq "$(INCLUDE_MODULE)" ""
 export EXCLUDED_MODULES = $(filter-out $(INCLUDE_MODULE),$(EXCLUDE_MODULES))
@@ -70,6 +87,18 @@ else
 export EXCLUDED_MODULES = $(EXCLUDE_MODULES)
 endif
 
+ifneq "$(EXCLUDED_MODULES)" ""
+$(info **NOTE** Excluding modules $(EXCLUDED_MODULES))
+endif
+
+ifneq "$(AXIS)" ""
+DEFINES += -DMAX_ROBOT_ACTUATORS=$(AXIS)
+endif
+
+# define the number of primary (cartesian) axis must be >= MAX_ROBOT_ACTUATORS
+ifneq "$(PAXIS)" ""
+DEFINES += -DN_PRIMARY_AXIS=$(PAXIS)
+endif
 
 # set to not compile in any network support
 #export NONETWORK = 1
@@ -79,10 +108,17 @@ include $(BUILD_DIR)/build.mk
 CONSOLE?=/dev/arduino
 BAUD?=9600
 
+ifneq "$(OS)" "Windows_NT"
+COPY=cp
+else
+COPY=copy
+endif
+
 .PHONY: debug-store flash upload debug console dfu
+print-%  : ; @echo $* = $($*)
 
 debug-store: ../LPC1768/$(PROJECT).elf
-	cp ../LPC1768/$(PROJECT).elf ../LPC1768/$(PROJECT)_lastupload.elf
+	cd .. && cd LPC1768 && $(COPY) $(PROJECT).elf $(PROJECT)_lastupload.elf
 
 flash: ../LPC1768/$(PROJECT).hex debug-store
 	lpc21isp $< $(CONSOLE) 115200 12000

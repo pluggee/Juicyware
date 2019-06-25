@@ -26,6 +26,7 @@
 #include "Planner.h"
 #include "StepperMotor.h"
 #include "EndstopsPublicAccess.h"
+#include "LaserScreen.h"
 
 #include <string>
 using namespace std;
@@ -94,7 +95,7 @@ void MainMenuScreen::setupConfigureScreen()
 void MainMenuScreen::on_enter()
 {
     THEPANEL->enter_menu_mode();
-    THEPANEL->setup_menu(7);
+    THEPANEL->setup_menu(THEPANEL->has_laser()?8:7);
     this->refresh_menu();
 }
 
@@ -112,12 +113,15 @@ void MainMenuScreen::display_menu_line(uint16_t line)
 {
     switch ( line ) {
         case 0: THEPANEL->lcd->printf("DRO"); break;
-        case 1: if(THEKERNEL->is_halted()) THEPANEL->lcd->printf("Clear HALT"); else THEPANEL->lcd->printf(THEPANEL->is_playing() ? "Abort" : "Play"); break;
+        case 1: if(THEKERNEL->is_halted()) THEPANEL->lcd->printf("Clear HALT");
+                else if(THEKERNEL->get_feed_hold()) THEPANEL->lcd->printf("Clear Hold");
+                else THEPANEL->lcd->printf(THEPANEL->is_playing() ? "Abort" : "Play"); break;
         case 2: THEPANEL->lcd->printf("Jog"); break;
         case 3: THEPANEL->lcd->printf("Prepare"); break;
         case 4: THEPANEL->lcd->printf("Custom"); break;
         case 5: THEPANEL->lcd->printf("Configure"); break;
         case 6: THEPANEL->lcd->printf("Probe"); break;
+        case 7: THEPANEL->lcd->printf("Laser"); break; // only used if THEPANEL->has_laser()
     }
 }
 
@@ -127,7 +131,10 @@ void MainMenuScreen::clicked_menu_entry(uint16_t line)
         case 0: THEPANEL->enter_screen(this->watch_screen); break;
         case 1:
             if(THEKERNEL->is_halted()){
-                send_command("M999");
+                THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
+                THEPANEL->enter_screen(this->watch_screen);
+            }else if(THEKERNEL->get_feed_hold()){
+                THEKERNEL->set_feed_hold(false);
                 THEPANEL->enter_screen(this->watch_screen);
             }else if(THEPANEL->is_playing()) abort_playing();
              else THEPANEL->enter_screen(this->file_screen); break;
@@ -136,6 +143,7 @@ void MainMenuScreen::clicked_menu_entry(uint16_t line)
         case 4: THEPANEL->enter_screen(THEPANEL->custom_screen ); break;
         case 5: setupConfigureScreen(); break;
         case 6: THEPANEL->enter_screen((new ProbeScreen())->set_parent(this)); break;
+        case 7: THEPANEL->enter_screen((new LaserScreen())->set_parent(this)); break; // self deleting, only used if THEPANEL->has_laser()
     }
 }
 

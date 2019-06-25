@@ -67,15 +67,9 @@ void ProbeScreen::on_refresh()
 
     if(this->new_result) {
         this->new_result= false;
-        THEPANEL->lcd->setCursor(0, 3);
-        THEPANEL->lcd->printf("%20s", this->result.substr(0, 20).c_str());
-        if(this->result.size() > 20 && THEPANEL->get_screen_lines() > 4) {
-            THEPANEL->lcd->setCursor(0, 4);
-            THEPANEL->lcd->printf("%20s", this->result.substr(20, 20).c_str());
-        }
-        if(this->result.size() > 40 && THEPANEL->get_screen_lines() > 5) {
-            THEPANEL->lcd->setCursor(0, 5);
-            THEPANEL->lcd->printf("%20s", this->result.substr(40, 20).c_str());
+        for ( uint8_t l=0; (l < THEPANEL->get_screen_lines()-3) && (this->result.size() > l*20); l++ ) {
+            THEPANEL->lcd->setCursor(0, l+3);
+            THEPANEL->lcd->printf("%-20s", this->result.substr(l*20,20).c_str());
         }
     }
 }
@@ -151,7 +145,14 @@ void ProbeScreen::on_main_loop()
         THEPANEL->lcd->printf("Probing complete... ");
         THEPANEL->lcd->setCursor(0, 1);
         THEPANEL->lcd->printf("Click to exit");
+        // TODO could use THEROBOT->get_last_probe_position() -> std::tuple<float, float, float, uint8_t>
         this->result= string_stream.getOutput();
+        size_t p= this->result.find("PRB:");
+        if(p != string::npos) {
+            this->result= this->result.substr(p+4); // extract just coordinates
+            size_t p= this->result.find("]");
+            this->result= this->result.substr(0, p); // chop off end
+        }
         this->new_result= true;
         this->probing= false;
         this->display_result= true;

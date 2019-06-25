@@ -5,38 +5,32 @@
       You should have received a copy of the GNU General Public License along with Smoothie. If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef CONTROLSCREEN_H
-#define CONTROLSCREEN_H
+#ifndef SPINDLE_CONTROL_MODULE_H
+#define SPINDLE_CONTROL_MODULE_H
 
-#include "PanelScreen.h"
+#include "libs/Module.h"
 
-class ControlScreen : public PanelScreen
-{
-public:
-    ControlScreen();
-    void on_main_loop();
-    void on_refresh();
-    void on_enter();
-    void display_menu_line(uint16_t line);
-    void set_jog_increment(float i) { jog_increment = i;}
-    int idle_timeout_secs() { return 120; }
+class SpindleControl: public Module {
+    public:
+        SpindleControl() {};
+        virtual ~SpindleControl() {};
+        virtual void on_module_loaded() {};
 
-private:
-    void clicked_menu_entry(uint16_t line);
-    void display_axis_line(char axis);
-    void enter_axis_control(char axis);
-    void enter_menu_control();
-    void set_current_pos(char axis, float p);
-    char control_mode;
-    char controlled_axis;
-    bool pos_changed;
-    float pos[3];
-    float jog_increment;
+    protected:
+        bool spindle_on;
+
+    private:
+        void on_gcode_received(void *argument);
+        void on_halt(void *argument);
+        
+        virtual void turn_on(void) {};
+        virtual void turn_off(void) {};
+        virtual void set_speed(int) {};
+        virtual void report_speed(void) {};
+        virtual void set_p_term(float) {};
+        virtual void set_i_term(float) {};
+        virtual void set_d_term(float) {};
+        virtual void report_settings(void) {};
 };
-
-
-
-
-
 
 #endif

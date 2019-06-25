@@ -38,7 +38,7 @@ These are feature deviations between Smoothieware and Juicyware
   <del>`src/modules/utils/currentcontrol/DigipotBase.h`</del>
   <del>`src/modules/utils/currentcontrol/ad5206.h`</del>
   <del>`src/modules/utils/currentcontrol/mcp4451.h`</del>
-  * Removed smoothieboard current control module files
+  * <del>Removed smoothieboard current control module files</del>
 * `src/modules/utils/simpleshell/SimpleShell.cpp`
   `src/modules/utils/simpleshell/SimpleShell.h`
   * Added `mod` command extention for Juicyboard and its modules

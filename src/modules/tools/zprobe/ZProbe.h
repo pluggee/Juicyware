@@ -26,17 +26,15 @@ class ZProbe: public Module
 {
 
 public:
-    ZProbe() : invert_override(false) {};
+    ZProbe() : invert_override(false),invert_probe(false) {};
     virtual ~ZProbe() {};
 
     void on_module_loaded();
     void on_gcode_received(void *argument);
 
     bool run_probe(float& mm, float feedrate, float max_dist= -1, bool reverse= false);
-    bool run_probe(float& mm, bool fast= false) { return run_probe(mm, fast ? this->fast_feedrate : this->slow_feedrate); }
-    bool return_probe(float mm, bool reverse= false);
+    bool run_probe_return(float& mm, float feedrate, float max_dist= -1, bool reverse= false);
     bool doProbeAt(float &mm, float x, float y);
-    float probeDistance(float x, float y);
 
     void coordinated_move(float x, float y, float z, float feedrate, bool relative=false);
     void home();
@@ -49,7 +47,7 @@ public:
 
 private:
     void config_load();
-    void probe_XYZ(Gcode *gc, int axis);
+    void probe_XYZ(Gcode *gc);
     uint32_t read_probe(uint32_t dummy);
 
     float slow_feedrate;
@@ -57,6 +55,7 @@ private:
     float return_feedrate;
     float probe_height;
     float max_z;
+    float dwell_before_probing;
 
     Pin pin;
     std::vector<LevelingStrategy*> strategies;
@@ -68,6 +67,7 @@ private:
         bool probing:1;
         bool reverse_z:1;
         bool invert_override:1;
+        bool invert_probe:1;
         volatile bool probe_detected:1;
     };
 };
