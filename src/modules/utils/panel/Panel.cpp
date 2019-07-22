@@ -244,7 +244,7 @@ uint32_t Panel::encoder_check(uint32_t dummy)
     // done in idle loop, this is indicated by lcd->encoderReturnsDelta()
     // however when reading encoder directly it needs to be done
     // frequently, universal panel adapter will return an actual delta count so won't miss any if polled slowly
-    // NOTE FIXME (WHY is it in menu only?) this code will not work if change is not 1,0,-1 anything greater (as in above case) will not work properly
+    // NOTE FIXME: (WHY is it in menu only?) this code will not work if change is not 1,0,-1 anything greater (as in above case) will not work properly
     static int encoder_counter = 0; // keeps track of absolute encoder position
     static int last_encoder_click= 0; // last readfing of divided encoder count
 
@@ -352,10 +352,10 @@ void Panel::idle_processing()
         string build(v.get_build());
         string date(v.get_build_date());
         this->lcd->clear();
-        this->lcd->setCursor(0, 0); this->lcd->printf("Welcome to Smoothie");
+        this->lcd->setCursor(0, 0); this->lcd->printf("Welcome to Juicy/Smoothie\r\n");
         this->lcd->setCursor(0, 1); this->lcd->printf("%s", build.substr(0, 20).c_str());
         this->lcd->setCursor(0, 2); this->lcd->printf("%s", date.substr(0, 20).c_str());
-        this->lcd->setCursor(0, 3); this->lcd->printf("Please wait....");
+        this->lcd->setCursor(0, 3); this->lcd->printf("Please wait....\r\n");
 
         if (this->lcd->hasGraphics()) {
             this->lcd->bltGlyph(24, 40, ohw_logo_antipixel_width, ohw_logo_antipixel_height, ohw_logo_antipixel_bits);

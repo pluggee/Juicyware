@@ -292,7 +292,7 @@ void SimpleShell::on_console_line_received( void *argument )
             //new_message.stream->printf("ok\n");
 
         }else if(!parse_command(cmd.c_str(), possible_command, new_message.stream)) {
-            new_message.stream->printf("error:Unsupported command - %s\n", cmd.c_str());
+            new_message.stream->printf("error:Unsupported command - %s\r\n", cmd.c_str());
         }
     }
 }
@@ -497,7 +497,7 @@ void SimpleShell::upload_command( string parameters, StreamOutput *stream )
             uploading = false;
             // close file
             fclose(fd);
-            stream->printf("uploaded %d bytes\n", cnt);
+            stream->printf("uploaded %d bytes\r\n", cnt);
             return;
 
         } else {
@@ -542,7 +542,7 @@ void SimpleShell::load_command( string parameters, StreamOutput *stream )
     FILE *fp = fopen(filename.c_str(), "r");
     if(fp != NULL) {
         char buf[132];
-        stream->printf("Loading config override file: %s...\n", filename.c_str());
+        stream->printf("Loading config override file: %s...\r\n", filename.c_str());
         while(fgets(buf, sizeof buf, fp) != NULL) {
             stream->printf("  %s", buf);
             if(buf[0] == ';') continue; // skip the comments
@@ -552,11 +552,11 @@ void SimpleShell::load_command( string parameters, StreamOutput *stream )
             delete gcode;
             THEKERNEL->call_event(ON_IDLE);
         }
-        stream->printf("config override file executed\n");
+        stream->printf("config override file executed\r\n");
         fclose(fp);
 
     } else {
-        stream->printf("File not found: %s\n", filename.c_str());
+        stream->printf("File not found: %s\r\n", filename.c_str());
     }
 }
 
@@ -645,7 +645,7 @@ void SimpleShell::net_command( string parameters, StreamOutput *stream)
         free(str);
 
     } else {
-        stream->printf("No network detected\n");
+        stream->printf("No network detected\r\n");
     }
 }
 

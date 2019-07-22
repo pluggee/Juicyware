@@ -29,7 +29,7 @@ void ExtruderMaker::load_tools(){
     THEKERNEL->config->get_module_list( &modules, extruder_checksum );
 
     if(modules.size() == 0) {
-        THEKERNEL->streams->printf("NOTE: No extruders configured\n");
+        THEKERNEL->streams->printf("NOTE: No extruders configured\r\n");
         return;
     }
 

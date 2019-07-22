@@ -102,7 +102,7 @@ void init() {
 
     Kernel* kernel = new Kernel();
 
-    kernel->streams->printf("Smoothie Running @%ldMHz\r\n", SystemCoreClock / 1000000);
+    kernel->streams->printf("Juicyware Running @%ldMHz\r\n", SystemCoreClock / 1000000);
     SimpleShell::version_command("", kernel->streams);
 
     bool sdok= (sd.disk_initialize() == 0);
@@ -220,9 +220,9 @@ void init() {
     if(t > 0.1F) {
         // NOTE setting WDT_RESET with the current bootloader would leave it in DFU mode which would be suboptimal
         kernel->add_module( new Watchdog(t*1000000, WDT_MRI)); // WDT_RESET));
-        kernel->streams->printf("Watchdog enabled for %f seconds\n", t);
+        kernel->streams->printf("Watchdog enabled for %f seconds\r\n", t);
     }else{
-        kernel->streams->printf("WARNING Watchdog is disabled\n");
+        kernel->streams->printf("WARNING Watchdog is disabled\r\n");
     }
 
 
@@ -246,14 +246,14 @@ void init() {
         FILE *fp= fopen(kernel->config_override_filename(), "r");
         if(fp != NULL) {
             char buf[132];
-            kernel->streams->printf("Loading config override file: %s...\n", kernel->config_override_filename());
+            kernel->streams->printf("Loading config override file: %s...\r\n", kernel->config_override_filename());
             while(fgets(buf, sizeof buf, fp) != NULL) {
                 kernel->streams->printf("  %s", buf);
                 if(buf[0] == ';') continue; // skip the comments
                 struct SerialMessage message= {&(StreamOutput::NullStream), buf};
                 kernel->call_event(ON_CONSOLE_LINE_RECEIVED, &message);
             }
-            kernel->streams->printf("config override file executed\n");
+            kernel->streams->printf("config override file executed\r\n");
             fclose(fp);
         }
     }
