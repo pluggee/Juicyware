@@ -16,35 +16,20 @@
 #include "StreamOutputPool.h"
 
 #include <math.h>
-using namespace std;
 #include <vector>
+using namespace std;
 
-#define extruder_module_enable_checksum      CHECKSUM("extruder_module_enable")
 #define extruder_checksum                    CHECKSUM("extruder")
 #define enable_checksum                      CHECKSUM("enable")
 
 void ExtruderMaker::load_tools(){
 
-    // If there is a "single" extruder configured ( old config syntax from when there was only one extruder module, no pool/maker
-    if( THEKERNEL->config->value( extruder_module_enable_checksum )->by_default(false)->as_bool() ){
-        THEKERNEL->streams->printf("NOTE: Old Extruder config used\n");
-
-        // Make a new extruder module
-        Extruder* extruder = new Extruder(0, true);
-
-        // Add the module to the kernel
-        THEKERNEL->add_module( extruder );
-
-        // no toolmanager required so do not create one
-        return;
-    }
-
-    // Get every "declared" extruder module ( new, multiextruder syntax )
+    // Get every "declared" extruder module
     vector<uint16_t> modules;
     THEKERNEL->config->get_module_list( &modules, extruder_checksum );
 
     if(modules.size() == 0) {
-        THEKERNEL->streams->printf("NOTE: No extruders configured\n");
+        THEKERNEL->streams->printf("NOTE: No extruders configured\r\n");
         return;
     }
 
@@ -90,7 +75,7 @@ void ExtruderMaker::load_tools(){
 
             }else{
                 // if not managed by toolmanager we need to enable the one extruder
-                extruder->enable();
+                extruder->select();
             }
         }
 

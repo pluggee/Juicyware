@@ -7,9 +7,6 @@
 
 #include "libs/Module.h"
 #include "libs/Kernel.h"
-#include <math.h>
-using namespace std;
-#include <vector>
 #include "ToolManager.h"
 #include "Tool.h"
 #include "PublicDataRequest.h"
@@ -25,6 +22,8 @@ using namespace std;
 #include "libs/SerialMessage.h"
 #include "libs/StreamOutput.h"
 #include "FileStream.h"
+
+#include <math.h>
 
 ToolManager::ToolManager()
 {
@@ -55,15 +54,15 @@ void ToolManager::on_gcode_received(void *argument)
         } else {
             if(new_tool != this->active_tool) {
                 // We must wait for an empty queue before we can disable the current extruder
-                THEKERNEL->conveyor->wait_for_empty_queue();
-                this->tools[active_tool]->disable();
+                THEKERNEL->conveyor->wait_for_idle();
+                this->tools[active_tool]->deselect();
                 this->active_tool = new_tool;
                 this->current_tool_name = this->tools[active_tool]->get_name();
-                this->tools[active_tool]->enable();
+                this->tools[active_tool]->select();
 
                 //send new_tool_offsets to robot
                 const float *new_tool_offset = tools[new_tool]->get_offset();
-                THEKERNEL->robot->setToolOffset(new_tool_offset);
+                THEROBOT->setToolOffset(new_tool_offset);
             }
         }
     }
@@ -115,13 +114,13 @@ void ToolManager::on_set_public_data(void* argument)
 void ToolManager::add_tool(Tool* tool_to_add)
 {
     if(this->tools.size() == 0) {
-        tool_to_add->enable();
+        tool_to_add->select();
         this->current_tool_name = tool_to_add->get_name();
         //send new_tool_offsets to robot
         const float *new_tool_offset = tool_to_add->get_offset();
-        THEKERNEL->robot->setToolOffset(new_tool_offset);
+        THEROBOT->setToolOffset(new_tool_offset);
     } else {
-        tool_to_add->disable();
+        tool_to_add->deselect();
     }
     this->tools.push_back( tool_to_add );
 }

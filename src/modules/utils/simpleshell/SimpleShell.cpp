@@ -12,7 +12,8 @@
 #include "libs/utils.h"
 #include "libs/SerialMessage.h"
 #include "libs/StreamOutput.h"
-#include "modules/robot/Conveyor.h"
+#include "libs/StreamOutputPool.h"
+#include "Conveyor.h"
 #include "DirHandle.h"
 #include "mri.h"
 #include "version.h"
@@ -28,6 +29,7 @@
 #include "BaseSolution.h"
 #include "StepperMotor.h"
 #include "Configurator.h"
+#include "Block.h"
 
 #include "TemperatureControlPublicAccess.h"
 #include "EndstopsPublicAccess.h"
@@ -38,6 +40,7 @@
 #include "Thermistor.h"
 #include "md5.h"
 #include "utils.h"
+#include "AutoPushPop.h"
 
 #include "system_LPC17xx.h"
 #include "LPC17xx.h"
@@ -50,10 +53,12 @@ extern unsigned int g_maximumHeapAddress;
 #include <mri.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <functional>
 
 extern "C" uint32_t  __end__;
 extern "C" uint32_t  __malloc_free_list;
 extern "C" uint32_t  _sbrk(int size);
+
 
 // command lookup table
 const SimpleShell::ptentry_t SimpleShell::commands_table[] = {
@@ -61,8 +66,10 @@ const SimpleShell::ptentry_t SimpleShell::commands_table[] = {
     {"cd",       SimpleShell::cd_command},
     {"pwd",      SimpleShell::pwd_command},
     {"cat",      SimpleShell::cat_command},
+    {"echo",     SimpleShell::echo_command},
     {"rm",       SimpleShell::rm_command},
     {"mv",       SimpleShell::mv_command},
+    {"mkdir",    SimpleShell::mkdir_command},
     {"upload",   SimpleShell::upload_command},
     {"reset",    SimpleShell::reset_command},
     {"dfu",      SimpleShell::dfu_command},
@@ -81,9 +88,9 @@ const SimpleShell::ptentry_t SimpleShell::commands_table[] = {
     {"calc_thermistor", SimpleShell::calc_thermistor_command},
     {"thermistors", SimpleShell::print_thermistors_command},
     {"md5sum",   SimpleShell::md5sum_command},
-#ifdef CNC
     {"test",     SimpleShell::test_command},
-#endif
+    {"mod",      SimpleShell::mod_command},                          // extended module commands for JuicyBoard
+
     // unknown command
     {NULL, NULL}
 };
@@ -104,7 +111,7 @@ static uint32_t heapWalk(StreamOutput *stream, bool verbose)
     uint32_t freeSize = 0;
     uint32_t usedSize = 0;
 
-    stream->printf("Used Heap Size: %lu\n", heapEnd - chunkCurr);
+    stream->printf("Used Heap Size: %lu\r\n", heapEnd - chunkCurr);
 
     // Walk through the chunks until we hit the end of the heap.
     while (chunkCurr < heapEnd) {
@@ -133,7 +140,7 @@ static uint32_t heapWalk(StreamOutput *stream, bool verbose)
         // byte-alignment of the returned pointer.
         chunkSize -= 8;
         if (verbose)
-            stream->printf("  Chunk: %lu  Address: 0x%08lX  Size: %lu  %s\n", chunkNumber, chunkCurr, chunkSize, isChunkFree ? "CHUNK FREE" : "");
+            stream->printf("  Chunk: %lu  Address: 0x%08lX  Size: %lu  %s\r\n", chunkNumber, chunkCurr, chunkSize, isChunkFree ? "CHUNK FREE" : "");
 
         if (isChunkFree) freeSize += chunkSize;
         else usedSize += chunkSize;
@@ -212,32 +219,50 @@ void SimpleShell::on_console_line_received( void *argument )
             case 'G':
                 // issue get state
                 get_command("state", new_message.stream);
-                new_message.stream->printf("ok\n");
+                new_message.stream->printf("ok\r\n");
+                break;
+
+            case 'I':
+                // issue get state for smoopi
+                get_command("state", new_message.stream);
                 break;
 
             case 'X':
-                THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
-                new_message.stream->printf("[Caution: Unlocked]\nok\n");
+                if(THEKERNEL->is_halted()) {
+                    THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
+                    new_message.stream->printf("[Caution: Unlocked]\r\nok\r\n");
+                }
                 break;
 
             case '#':
                 grblDP_command("", new_message.stream);
-                new_message.stream->printf("ok\n");
+                new_message.stream->printf("ok\r\n");
                 break;
 
             case 'H':
+                if(THEKERNEL->is_halted()) THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
                 if(THEKERNEL->is_grbl_mode()) {
-                    THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
                     // issue G28.2 which is force homing cycle
                     Gcode gcode("G28.2", new_message.stream);
                     THEKERNEL->call_event(ON_GCODE_RECEIVED, &gcode);
                 }else{
-                    new_message.stream->printf("error:only supported in GRBL mode\n");
+                    Gcode gcode("G28", new_message.stream);
+                    THEKERNEL->call_event(ON_GCODE_RECEIVED, &gcode);
                 }
+                new_message.stream->printf("ok\r\n");
+                break;
+
+            case 'S':
+                switch_command(possible_command, new_message.stream);
+                break;
+
+            case 'J':
+                // instant jog command
+                jog(possible_command, new_message.stream);
                 break;
 
             default:
-                new_message.stream->printf("error:Invalid statement\n");
+                new_message.stream->printf("error:Invalid statement\r\n");
                 break;
         }
 
@@ -259,12 +284,15 @@ void SimpleShell::on_console_line_received( void *argument )
         } else if (cmd == "play" || cmd == "progress" || cmd == "abort" || cmd == "suspend" || cmd == "resume") {
             // these are handled by Player module
 
-        } else if (cmd == "ok") {
-            // probably an echo so reply ok
-            new_message.stream->printf("ok\n");
+        } else if (cmd == "fire") {
+            // these are handled by Laser module
+
+        } else if (cmd.substr(0, 2) == "ok") {
+            // probably an echo so ignore the whole line
+            //new_message.stream->printf("ok\n");
 
         }else if(!parse_command(cmd.c_str(), possible_command, new_message.stream)) {
-            new_message.stream->printf("error:Unsupported command - %s\n", cmd.c_str());
+            new_message.stream->printf("error:Unsupported command - %s\r\n", cmd.c_str());
         }
     }
 }
@@ -335,6 +363,15 @@ void SimpleShell::mv_command( string parameters, StreamOutput *stream )
     else stream->printf("renamed %s to %s\r\n", from.c_str(), to.c_str());
 }
 
+// Create a new directory
+void SimpleShell::mkdir_command( string parameters, StreamOutput *stream )
+{
+    string path = absolute_from_relative(shift_parameter( parameters ));
+    int result = mkdir(path.c_str(), 0);
+    if (result != 0) stream->printf("could not create directory %s\r\n", path.c_str());
+    else stream->printf("created directory %s\r\n", path.c_str());
+}
+
 // Change current absolute path to provided path
 void SimpleShell::cd_command( string parameters, StreamOutput *stream )
 {
@@ -385,7 +422,7 @@ void SimpleShell::cat_command( string parameters, StreamOutput *stream )
 
     // we have been asked to delay before cat, probably to allow time to issue upload command
     if(delay > 0) {
-        safe_delay(delay*1000);
+        safe_delay_ms(delay*1000);
     }
 
     // Open file
@@ -420,12 +457,19 @@ void SimpleShell::cat_command( string parameters, StreamOutput *stream )
     }
 }
 
+// echo commands
+void SimpleShell::echo_command( string parameters, StreamOutput *stream )
+{
+    //send to all streams
+    THEKERNEL->streams->printf("echo: %s\r\n", parameters.c_str());
+}
+
 void SimpleShell::upload_command( string parameters, StreamOutput *stream )
 {
     // this needs to be a hack. it needs to read direct from serial and not allow on_main_loop run until done
     // NOTE this will block all operation until the upload is complete, so do not do while printing
-    if(!THEKERNEL->conveyor->is_queue_empty()) {
-        stream->printf("upload not allowed while printing or busy\n");
+    if(!THECONVEYOR->is_idle()) {
+        stream->printf("upload not allowed while printing or busy\r\n");
         return;
     }
 
@@ -453,7 +497,7 @@ void SimpleShell::upload_command( string parameters, StreamOutput *stream )
             uploading = false;
             // close file
             fclose(fd);
-            stream->printf("uploaded %d bytes\n", cnt);
+            stream->printf("uploaded %d bytes\r\n", cnt);
             return;
 
         } else {
@@ -467,10 +511,7 @@ void SimpleShell::upload_command( string parameters, StreamOutput *stream )
                 uploading= false;
 
             } else {
-                if ((cnt%400) == 0) {
-                    // HACK ALERT to get around fwrite corruption close and re open for append
-                    fclose(fd);
-                    fd = fopen(upload_filename.c_str(), "a");
+                if ((cnt%1000) == 0) {
                     // we need to kick things or they die
                     THEKERNEL->call_event(ON_IDLE);
                 }
@@ -501,7 +542,7 @@ void SimpleShell::load_command( string parameters, StreamOutput *stream )
     FILE *fp = fopen(filename.c_str(), "r");
     if(fp != NULL) {
         char buf[132];
-        stream->printf("Loading config override file: %s...\n", filename.c_str());
+        stream->printf("Loading config override file: %s...\r\n", filename.c_str());
         while(fgets(buf, sizeof buf, fp) != NULL) {
             stream->printf("  %s", buf);
             if(buf[0] == ';') continue; // skip the comments
@@ -511,11 +552,11 @@ void SimpleShell::load_command( string parameters, StreamOutput *stream )
             delete gcode;
             THEKERNEL->call_event(ON_IDLE);
         }
-        stream->printf("config override file executed\n");
+        stream->printf("config override file executed\r\n");
         fclose(fp);
 
     } else {
-        stream->printf("File not found: %s\n", filename.c_str());
+        stream->printf("File not found: %s\r\n", filename.c_str());
     }
 }
 
@@ -528,7 +569,7 @@ void SimpleShell::save_command( string parameters, StreamOutput *stream )
         filename = THEKERNEL->config_override_filename();
     }
 
-    THEKERNEL->conveyor->wait_for_empty_queue(); //just to be safe as it can take a while to run
+    THECONVEYOR->wait_for_idle(); //just to be safe as it can take a while to run
 
     //remove(filename.c_str()); // seems to cause a hang every now and then
     {
@@ -571,6 +612,8 @@ void SimpleShell::mem_command( string parameters, StreamOutput *stream)
         AHB0.debug(stream);
         AHB1.debug(stream);
     }
+
+    stream->printf("Block size: %u bytes, Tickinfo size: %u bytes\r\n", sizeof(Block), sizeof(Block::tickinfo_t) * Block::n_actuators);
 }
 
 static uint32_t getDeviceType()
@@ -602,7 +645,7 @@ void SimpleShell::net_command( string parameters, StreamOutput *stream)
         free(str);
 
     } else {
-        stream->printf("No network detected\n");
+        stream->printf("No network detected\r\n");
     }
 }
 
@@ -614,8 +657,18 @@ void SimpleShell::version_command( string parameters, StreamOutput *stream)
     const char *mcu = (dev & 0x00100000) ? "LPC1769" : "LPC1768";
     stream->printf("Build version: %s, Build date: %s, MCU: %s, System Clock: %ldMHz\r\n", vers.get_build(), vers.get_build_date(), mcu, SystemCoreClock / 1000000);
     #ifdef CNC
-    stream->printf("  CNC Build\r\n");
+    stream->printf("  CNC Build ");
     #endif
+    #ifdef DISABLEMSD
+    stream->printf("  NOMSD Build\r\n");
+    #endif
+    stream->printf("%d axis\r\n", MAX_ROBOT_ACTUATORS);
+    if(!(dev & 0x00100000)) {
+        stream->printf("WARNING: This is not a sanctioned board and may be unreliable and even dangerous.\r\nThis MCU is deprecated, and cannot guarantee proper function\r\n");
+        THEKERNEL->set_bad_mcu(true);
+    }else{
+        THEKERNEL->set_bad_mcu(false);
+    }
 }
 
 // Reset the system
@@ -651,6 +704,17 @@ static int get_active_tool()
     }
 }
 
+static bool get_switch_state(const char *sw)
+{
+    // get sw switch state
+    struct pad_switch pad;
+    bool ok = PublicData::get_value(switch_checksum, get_checksum(sw), 0, &pad);
+    if (!ok) {
+        return false;
+    }
+    return pad.state;
+}
+
 void SimpleShell::grblDP_command( string parameters, StreamOutput *stream)
 {
     /*
@@ -669,48 +733,48 @@ void SimpleShell::grblDP_command( string parameters, StreamOutput *stream)
 
     bool verbose = shift_parameter( parameters ).find_first_of("Vv") != string::npos;
 
-    std::vector<Robot::wcs_t> v= THEKERNEL->robot->get_wcs_state();
+    std::vector<Robot::wcs_t> v= THEROBOT->get_wcs_state();
     if(verbose) {
         char current_wcs= std::get<0>(v[0]);
-        stream->printf("[current WCS: %s]\n", wcs2gcode(current_wcs).c_str());
+        stream->printf("[current WCS: %s]\r\n", wcs2gcode(current_wcs).c_str());
     }
 
     int n= std::get<1>(v[0]);
     for (int i = 1; i <= n; ++i) {
-        stream->printf("[%s:%1.4f,%1.4f,%1.4f]\n", wcs2gcode(i-1).c_str(),
-            THEKERNEL->robot->from_millimeters(std::get<0>(v[i])),
-            THEKERNEL->robot->from_millimeters(std::get<1>(v[i])),
-            THEKERNEL->robot->from_millimeters(std::get<2>(v[i])));
+        stream->printf("[%s:%1.4f,%1.4f,%1.4f]\r\n", wcs2gcode(i-1).c_str(),
+            THEROBOT->from_millimeters(std::get<0>(v[i])),
+            THEROBOT->from_millimeters(std::get<1>(v[i])),
+            THEROBOT->from_millimeters(std::get<2>(v[i])));
     }
 
     float *rd;
     PublicData::get_value( endstops_checksum, saved_position_checksum, &rd );
-    stream->printf("[G28:%1.4f,%1.4f,%1.4f]\n",
-        THEKERNEL->robot->from_millimeters(rd[0]),
-        THEKERNEL->robot->from_millimeters(rd[1]),
-        THEKERNEL->robot->from_millimeters(rd[2]));
+    stream->printf("[G28:%1.4f,%1.4f,%1.4f]\r\n",
+        THEROBOT->from_millimeters(rd[0]),
+        THEROBOT->from_millimeters(rd[1]),
+        THEROBOT->from_millimeters(rd[2]));
 
-    stream->printf("[G30:%1.4f,%1.4f,%1.4f]\n",  0.0F, 0.0F, 0.0F); // not implemented
+    stream->printf("[G30:%1.4f,%1.4f,%1.4f]\r\n",  0.0F, 0.0F, 0.0F); // not implemented
 
-    stream->printf("[G92:%1.4f,%1.4f,%1.4f]\n",
-        THEKERNEL->robot->from_millimeters(std::get<0>(v[n+1])),
-        THEKERNEL->robot->from_millimeters(std::get<1>(v[n+1])),
-        THEKERNEL->robot->from_millimeters(std::get<2>(v[n+1])));
+    stream->printf("[G92:%1.4f,%1.4f,%1.4f]\r\n",
+        THEROBOT->from_millimeters(std::get<0>(v[n+1])),
+        THEROBOT->from_millimeters(std::get<1>(v[n+1])),
+        THEROBOT->from_millimeters(std::get<2>(v[n+1])));
 
     if(verbose) {
-        stream->printf("[Tool Offset:%1.4f,%1.4f,%1.4f]\n",
-            THEKERNEL->robot->from_millimeters(std::get<0>(v[n+2])),
-            THEKERNEL->robot->from_millimeters(std::get<1>(v[n+2])),
-            THEKERNEL->robot->from_millimeters(std::get<2>(v[n+2])));
+        stream->printf("[Tool Offset:%1.4f,%1.4f,%1.4f]\r\n",
+            THEROBOT->from_millimeters(std::get<0>(v[n+2])),
+            THEROBOT->from_millimeters(std::get<1>(v[n+2])),
+            THEROBOT->from_millimeters(std::get<2>(v[n+2])));
     }else{
-        stream->printf("[TL0:%1.4f]\n", THEKERNEL->robot->from_millimeters(std::get<2>(v[n+2])));
+        stream->printf("[TL0:%1.4f]\r\n", THEROBOT->from_millimeters(std::get<2>(v[n+2])));
     }
 
     // this is the last probe position, updated when a probe completes, also stores the number of steps moved after a homing cycle
     float px, py, pz;
     uint8_t ps;
-    std::tie(px, py, pz, ps) = THEKERNEL->robot->get_last_probe_position();
-    stream->printf("[PRB:%1.4f,%1.4f,%1.4f:%d]\n", THEKERNEL->robot->from_millimeters(px), THEKERNEL->robot->from_millimeters(py), THEKERNEL->robot->from_millimeters(pz), ps);
+    std::tie(px, py, pz, ps) = THEROBOT->get_last_probe_position();
+    stream->printf("[PRB:%1.4f,%1.4f,%1.4f:%d]\r\n", THEROBOT->from_millimeters(px), THEROBOT->from_millimeters(py), THEROBOT->from_millimeters(pz), ps);
 }
 
 void SimpleShell::get_command( string parameters, StreamOutput *stream)
@@ -765,12 +829,8 @@ void SimpleShell::get_command( string parameters, StreamOutput *stream)
             // do forward kinematics on the given actuator position and display the cartesian coordinates
             ActuatorCoordinates apos{x, y, z};
             float pos[3];
-            THEKERNEL->robot->arm_solution->actuator_to_cartesian(apos, pos);
-            stream->printf("cartesian= X %f, Y %f, Z %f, Steps= A %lu, B %lu, C %lu\n",
-                pos[0], pos[1], pos[2],
-                lroundf(x*THEKERNEL->robot->actuators[0]->get_steps_per_mm()),
-                lroundf(y*THEKERNEL->robot->actuators[1]->get_steps_per_mm()),
-                lroundf(z*THEKERNEL->robot->actuators[2]->get_steps_per_mm()));
+            THEROBOT->arm_solution->actuator_to_cartesian(apos, pos);
+            stream->printf("cartesian= X %f, Y %f, Z %f\r\n", pos[0], pos[1], pos[2]);
             x= pos[0];
             y= pos[1];
             z= pos[2];
@@ -779,8 +839,8 @@ void SimpleShell::get_command( string parameters, StreamOutput *stream)
             // do inverse kinematics on the given cartesian position and display the actuator coordinates
             float pos[3]{x, y, z};
             ActuatorCoordinates apos;
-            THEKERNEL->robot->arm_solution->cartesian_to_actuator(pos, apos);
-            stream->printf("actuator= A %f, B %f, C %f\n", apos[0], apos[1], apos[2]);
+            THEROBOT->arm_solution->cartesian_to_actuator(pos, apos);
+            stream->printf("actuator= X %f, Y %f, Z %f\r\n", apos[0], apos[1], apos[2]);
         }
 
         if(move) {
@@ -791,43 +851,46 @@ void SimpleShell::get_command( string parameters, StreamOutput *stream)
             message.message = cmd;
             message.stream = &(StreamOutput::NullStream);
             THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
-            THEKERNEL->conveyor->wait_for_empty_queue();
+            THECONVEYOR->wait_for_idle();
         }
 
    } else if (what == "pos") {
-        // convenience to call all the various M114 variants
-        char buf[64];
-        THEKERNEL->robot->print_position(0, buf, sizeof buf); stream->printf("last %s\n", buf);
-        THEKERNEL->robot->print_position(1, buf, sizeof buf); stream->printf("realtime %s\n", buf);
-        THEKERNEL->robot->print_position(2, buf, sizeof buf); stream->printf("%s\n", buf);
-        THEKERNEL->robot->print_position(3, buf, sizeof buf); stream->printf("%s\n", buf);
-        THEKERNEL->robot->print_position(4, buf, sizeof buf); stream->printf("%s\n", buf);
-        THEKERNEL->robot->print_position(5, buf, sizeof buf); stream->printf("%s\n", buf);
+        // convenience to call all the various M114 variants, shows ABC axis where relevant
+        std::string buf;
+        THEROBOT->print_position(0, buf); stream->printf("last %s\r\n", buf.c_str()); buf.clear();
+        THEROBOT->print_position(1, buf); stream->printf("realtime %s\r\n", buf.c_str()); buf.clear();
+        THEROBOT->print_position(2, buf); stream->printf("%s\r\n", buf.c_str()); buf.clear();
+        THEROBOT->print_position(3, buf); stream->printf("%s\r\n", buf.c_str()); buf.clear();
+        THEROBOT->print_position(4, buf); stream->printf("%s\r\n", buf.c_str()); buf.clear();
+        THEROBOT->print_position(5, buf); stream->printf("%s\r\n", buf.c_str()); buf.clear();
 
     } else if (what == "wcs") {
         // print the wcs state
         grblDP_command("-v", stream);
 
     } else if (what == "state") {
-        // also $G
+        // also $G and $I
         // [G0 G54 G17 G21 G90 G94 M0 M5 M9 T0 F0.]
-        stream->printf("[G%d %s G%d G%d G%d G94 M0 M5 M9 T%d F%1.4f]\n",
+        stream->printf("[G%d %s G%d G%d G%d G94 M0 M%c M%c T%d F%1.4f S%1.4f]\r\n",
             THEKERNEL->gcode_dispatch->get_modal_command(),
-            wcs2gcode(THEKERNEL->robot->get_current_wcs()).c_str(),
-            THEKERNEL->robot->plane_axis_0 == X_AXIS && THEKERNEL->robot->plane_axis_1 == Y_AXIS && THEKERNEL->robot->plane_axis_2 == Z_AXIS ? 17 :
-              THEKERNEL->robot->plane_axis_0 == X_AXIS && THEKERNEL->robot->plane_axis_1 == Z_AXIS && THEKERNEL->robot->plane_axis_2 == Y_AXIS ? 18 :
-              THEKERNEL->robot->plane_axis_0 == Y_AXIS && THEKERNEL->robot->plane_axis_1 == Z_AXIS && THEKERNEL->robot->plane_axis_2 == X_AXIS ? 19 : 17,
-            THEKERNEL->robot->inch_mode ? 20 : 21,
-            THEKERNEL->robot->absolute_mode ? 90 : 91,
+            wcs2gcode(THEROBOT->get_current_wcs()).c_str(),
+            THEROBOT->plane_axis_0 == X_AXIS && THEROBOT->plane_axis_1 == Y_AXIS && THEROBOT->plane_axis_2 == Z_AXIS ? 17 :
+              THEROBOT->plane_axis_0 == X_AXIS && THEROBOT->plane_axis_1 == Z_AXIS && THEROBOT->plane_axis_2 == Y_AXIS ? 18 :
+              THEROBOT->plane_axis_0 == Y_AXIS && THEROBOT->plane_axis_1 == Z_AXIS && THEROBOT->plane_axis_2 == X_AXIS ? 19 : 17,
+            THEROBOT->inch_mode ? 20 : 21,
+            THEROBOT->absolute_mode ? 90 : 91,
+            get_switch_state("spindle") ? '3' : '5',
+            get_switch_state("mist") ? '7' : get_switch_state("flood") ? '8' : '9',
             get_active_tool(),
-            THEKERNEL->robot->from_millimeters(THEKERNEL->robot->get_feed_rate()));
+            THEROBOT->from_millimeters(THEROBOT->get_feed_rate()),
+            THEROBOT->get_s_value());
 
     } else if (what == "status") {
         // also ? on serial and usb
-        stream->printf("%s\n", THEKERNEL->get_query_string().c_str());
+        stream->printf("%s\r\n", THEKERNEL->get_query_string().c_str());
 
     } else {
-        stream->printf("error:unknown option %s\n", what.c_str());
+        stream->printf("error:unknown option %s\r\n", what.c_str());
     }
 }
 
@@ -848,14 +911,14 @@ void SimpleShell::set_temp_command( string parameters, StreamOutput *stream)
 
 void SimpleShell::print_thermistors_command( string parameters, StreamOutput *stream)
 {
-#ifndef NO_TOOLS_TEMPERATURECONTROL
+    #ifndef NO_TOOLS_TEMPERATURECONTROL
     Thermistor::print_predefined_thermistors(stream);
-#endif
+    #endif
 }
 
 void SimpleShell::calc_thermistor_command( string parameters, StreamOutput *stream)
 {
-#ifndef NO_TOOLS_TEMPERATURECONTROL
+    #ifndef NO_TOOLS_TEMPERATURECONTROL
     string s = shift_parameter( parameters );
     int saveto= -1;
     // see if we have -sn as first argument
@@ -871,42 +934,76 @@ void SimpleShell::calc_thermistor_command( string parameters, StreamOutput *stre
         // calculate the coefficients
         float c1, c2, c3;
         std::tie(c1, c2, c3) = Thermistor::calculate_steinhart_hart_coefficients(trl[0], trl[1], trl[2], trl[3], trl[4], trl[5]);
-        stream->printf("Steinhart Hart coefficients:  I%1.18f J%1.18f K%1.18f\n", c1, c2, c3);
+        stream->printf("Steinhart Hart coefficients:  I%1.18f J%1.18f K%1.18f\r\n", c1, c2, c3);
         if(saveto == -1) {
-            stream->printf("  Paste the above in the M305 S0 command, then save with M500\n");
+            stream->printf("  Paste the above in the M305 S0 command, then save with M500\r\n");
         }else{
             char buf[80];
-            int n = snprintf(buf, sizeof(buf), "M305 S%d I%1.18f J%1.18f K%1.18f", saveto, c1, c2, c3);
+            size_t n = snprintf(buf, sizeof(buf), "M305 S%d I%1.18f J%1.18f K%1.18f", saveto, c1, c2, c3);
+            if(n > sizeof(buf)) n= sizeof(buf);
             string g(buf, n);
             Gcode gcode(g, &(StreamOutput::NullStream));
             THEKERNEL->call_event(ON_GCODE_RECEIVED, &gcode );
-            stream->printf("  Setting Thermistor %d to those settings, save with M500\n", saveto);
+            stream->printf("  Setting Thermistor %d to those settings, save with M500\r\n", saveto);
         }
 
     }else{
         // give help
-        stream->printf("Usage: calc_thermistor T1,R1,T2,R2,T3,R3\n");
+        stream->printf("Usage: calc_thermistor T1,R1,T2,R2,T3,R3\r\n");
     }
-#endif
+    #endif
 }
 
-// used to test out the get public data events for switch
+// set or get switch state for a named switch
 void SimpleShell::switch_command( string parameters, StreamOutput *stream)
 {
-    string type = shift_parameter( parameters );
-    string value = shift_parameter( parameters );
-    bool ok = false;
-    if(value == "on" || value == "off") {
-        bool b = value == "on";
-        ok = PublicData::set_value( switch_checksum, get_checksum(type), state_checksum, &b );
-    } else {
-        float v = strtof(value.c_str(), NULL);
-        ok = PublicData::set_value( switch_checksum, get_checksum(type), value_checksum, &v );
+    string type;
+    string value;
+
+    if(parameters[0] == '$') {
+        // $S command
+        type = shift_parameter( parameters );
+        while(!type.empty()) {
+            struct pad_switch pad;
+            bool ok = PublicData::get_value(switch_checksum, get_checksum(type), 0, &pad);
+            if(ok) {
+                stream->printf("switch %s is %d\r\n", type.c_str(), pad.state);
+            }
+
+            type = shift_parameter( parameters );
+        }
+        return;
+
+    }else{
+        type = shift_parameter( parameters );
+        value = shift_parameter( parameters );
     }
-    if (ok) {
-        stream->printf("switch %s set to: %s\r\n", type.c_str(), value.c_str());
-    } else {
-        stream->printf("%s is not a known switch device\r\n", type.c_str());
+
+    bool ok = false;
+    if(value.empty()) {
+        // get switch state
+        struct pad_switch pad;
+        bool ok = PublicData::get_value(switch_checksum, get_checksum(type), 0, &pad);
+        if (!ok) {
+            stream->printf("unknown switch %s.\r\n", type.c_str());
+            return;
+        }
+        stream->printf("switch %s is %d\r\n", type.c_str(), pad.state);
+
+    }else{
+        // set switch state
+        if(value == "on" || value == "off") {
+            bool b = value == "on";
+            ok = PublicData::set_value( switch_checksum, get_checksum(type), state_checksum, &b );
+        } else {
+            stream->printf("must be either on or off\r\n");
+            return;
+        }
+        if (ok) {
+            stream->printf("switch %s set to: %s\r\n", type.c_str(), value.c_str());
+        } else {
+            stream->printf("%s is not a known switch device\r\n", type.c_str());
+        }
     }
 }
 
@@ -928,14 +1025,14 @@ void SimpleShell::md5sum_command( string parameters, StreamOutput *stream )
         THEKERNEL->call_event(ON_IDLE);
     } while(!feof(lp));
 
-    stream->printf("%s %s\n", md5.finalize().hexdigest().c_str(), filename.c_str());
+    stream->printf("%s %s\r\n", md5.finalize().hexdigest().c_str(), filename.c_str());
     fclose(lp);
 }
 
-#ifdef CNC
 // runs several types of test on the mechanisms
 void SimpleShell::test_command( string parameters, StreamOutput *stream)
 {
+    AutoPushPop app; // this will save the state and restore it on exit
     string what = shift_parameter( parameters );
 
     if (what == "jog") {
@@ -945,25 +1042,24 @@ void SimpleShell::test_command( string parameters, StreamOutput *stream)
         string iters = shift_parameter( parameters );
         string speed = shift_parameter( parameters );
         if(axis.empty() || dist.empty() || iters.empty()) {
-            stream->printf("error: Need axis distance iterations\n");
+            stream->printf("error: Need axis distance iterations\r\n");
             return;
         }
         float d= strtof(dist.c_str(), NULL);
-        float f= speed.empty() ? THEKERNEL->robot->get_feed_rate() : strtof(speed.c_str(), NULL);
+        float f= speed.empty() ? THEROBOT->get_feed_rate() : strtof(speed.c_str(), NULL);
         uint32_t n= strtol(iters.c_str(), NULL, 10);
 
         bool toggle= false;
         for (uint32_t i = 0; i < n; ++i) {
             char cmd[64];
             snprintf(cmd, sizeof(cmd), "G91 G0 %c%f F%f G90", toupper(axis[0]), toggle ? -d : d, f);
-            stream->printf("%s\n", cmd);
+            stream->printf("%s\r\n", cmd);
             struct SerialMessage message{&StreamOutput::NullStream, cmd};
             THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
             if(THEKERNEL->is_halted()) break;
-            THEKERNEL->conveyor->wait_for_empty_queue();
             toggle= !toggle;
         }
-        stream->printf("done\n");
+        stream->printf("done\r\n");
 
     }else if (what == "circle") {
         // draws a circle around origin. usage: radius iterations [feedrate]
@@ -971,29 +1067,39 @@ void SimpleShell::test_command( string parameters, StreamOutput *stream)
         string iters = shift_parameter( parameters );
         string speed = shift_parameter( parameters );
          if(radius.empty() || iters.empty()) {
-            stream->printf("error: Need radius iterations\n");
+            stream->printf("error: Need radius iterations\r\n");
             return;
         }
 
         float r= strtof(radius.c_str(), NULL);
         uint32_t n= strtol(iters.c_str(), NULL, 10);
-        float f= speed.empty() ? THEKERNEL->robot->get_feed_rate() : strtof(speed.c_str(), NULL);
+        float f= speed.empty() ? THEROBOT->get_feed_rate() : strtof(speed.c_str(), NULL);
 
+        THEROBOT->push_state();
         char cmd[64];
-        snprintf(cmd, sizeof(cmd), "G0 X%f Y0 F%f", -r, f);
-        stream->printf("%s\n", cmd);
+        snprintf(cmd, sizeof(cmd), "G91 G0 X%f F%f G90", -r, f);
+        stream->printf("%s\r\n", cmd);
         struct SerialMessage message{&StreamOutput::NullStream, cmd};
         THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
 
         for (uint32_t i = 0; i < n; ++i) {
             if(THEKERNEL->is_halted()) break;
-            snprintf(cmd, sizeof(cmd), "G2 X%f Y0 I%f J0 F%f", -r, r, f);
-            stream->printf("%s\n", cmd);
+            snprintf(cmd, sizeof(cmd), "G2 I%f J0 F%f", r, f);
+            stream->printf("%s\r\n", cmd);
             message.message= cmd;
             THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
-            THEKERNEL->conveyor->wait_for_empty_queue();
         }
-        stream->printf("done\n");
+
+        // leave it where it started
+        if(!THEKERNEL->is_halted()) {
+            snprintf(cmd, sizeof(cmd), "G91 G0 X%f F%f G90", r, f);
+            stream->printf("%s\r\n", cmd);
+            struct SerialMessage message{&StreamOutput::NullStream, cmd};
+            THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
+        }
+
+        THEROBOT->pop_state();
+        stream->printf("done\r\n");
 
     }else if (what == "square") {
         // draws a square usage: size iterations [feedrate]
@@ -1001,51 +1107,163 @@ void SimpleShell::test_command( string parameters, StreamOutput *stream)
         string iters = shift_parameter( parameters );
         string speed = shift_parameter( parameters );
         if(size.empty() || iters.empty()) {
-            stream->printf("error: Need size iterations\n");
+            stream->printf("error: Need size iterations\r\n");
             return;
         }
         float d= strtof(size.c_str(), NULL);
-        float f= speed.empty() ? THEKERNEL->robot->get_feed_rate() : strtof(speed.c_str(), NULL);
+        float f= speed.empty() ? THEROBOT->get_feed_rate() : strtof(speed.c_str(), NULL);
         uint32_t n= strtol(iters.c_str(), NULL, 10);
 
         for (uint32_t i = 0; i < n; ++i) {
             char cmd[64];
             {
                 snprintf(cmd, sizeof(cmd), "G91 G0 X%f F%f", d, f);
-                stream->printf("%s\n", cmd);
+                stream->printf("%s\r\n", cmd);
                 struct SerialMessage message{&StreamOutput::NullStream, cmd};
                 THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
             }
             {
                 snprintf(cmd, sizeof(cmd), "G0 Y%f", d);
-                stream->printf("%s\n", cmd);
+                stream->printf("%s\r\n", cmd);
                 struct SerialMessage message{&StreamOutput::NullStream, cmd};
                 THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
             }
             {
                 snprintf(cmd, sizeof(cmd), "G0 X%f", -d);
-                stream->printf("%s\n", cmd);
+                stream->printf("%s\r\n", cmd);
                 struct SerialMessage message{&StreamOutput::NullStream, cmd};
                 THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
             }
             {
                 snprintf(cmd, sizeof(cmd), "G0 Y%f G90", -d);
-                stream->printf("%s\n", cmd);
+                stream->printf("%s\r\n", cmd);
                 struct SerialMessage message{&StreamOutput::NullStream, cmd};
                 THEKERNEL->call_event(ON_CONSOLE_LINE_RECEIVED, &message );
             }
             if(THEKERNEL->is_halted()) break;
-            THEKERNEL->conveyor->wait_for_empty_queue();
+         }
+        stream->printf("done\r\n");
+
+    }else if (what == "raw") {
+        // issues raw steps to the specified axis usage: axis steps steps/sec
+        string axis = shift_parameter( parameters );
+        string stepstr = shift_parameter( parameters );
+        string stepspersec = shift_parameter( parameters );
+        if(axis.empty() || stepstr.empty() || stepspersec.empty()) {
+            stream->printf("error: Need axis steps steps/sec\r\n");
+            return;
         }
-        stream->printf("done\n");
+
+        char ax= toupper(axis[0]);
+        uint8_t a= ax >= 'X' ? ax - 'X' : ax - 'A' + 3;
+        int steps= strtol(stepstr.c_str(), NULL, 10);
+        bool dir= steps >= 0;
+        steps= std::abs(steps);
+
+        if(a > C_AXIS) {
+            stream->printf("error: axis must be x, y, z, a, b, c\r\n");
+            return;
+        }
+
+        if(a >= THEROBOT->get_number_registered_motors()) {
+            stream->printf("error: axis is out of range\r\n");
+            return;
+        }
+
+        uint32_t sps= strtol(stepspersec.c_str(), NULL, 10);
+        sps= std::max(sps, 1UL);
+
+        uint32_t delayus= 1000000.0F / sps;
+        for(int s= 0;s<steps;s++) {
+            if(THEKERNEL->is_halted()) break;
+            THEROBOT->actuators[a]->manual_step(dir);
+            // delay but call on_idle
+            safe_delay_us(delayus);
+        }
+
+        // reset the position based on current actuator position
+        THEROBOT->reset_position_from_current_actuator_position();
+
+        //stream->printf("done\n");
 
     }else {
-        stream->printf("usage:\n test jog axis distance iterations [feedrate]\n");
-        stream->printf(" test square size iterations [feedrate]\n");
-        stream->printf(" test circle radius iterations [feedrate]\n");
+        stream->printf("usage:\r\n test jog axis distance iterations [feedrate]\r\n");
+        stream->printf(" test square size iterations [feedrate]\r\n");
+        stream->printf(" test circle radius iterations [feedrate]\r\n");
+        stream->printf(" test raw axis steps steps/sec\r\n");
     }
 }
-#endif
+
+void SimpleShell::jog(string parameters, StreamOutput *stream)
+{
+    // $J X0.1 [Y0.2] [F0.5]
+    int n_motors= THEROBOT->get_number_registered_motors();
+
+    // get axis to move and amount (X0.1)
+    // may specify multiple axis
+
+    float rate_mm_s= NAN;
+    float scale= 1.0F;
+    float delta[n_motors];
+    for (int i = 0; i < n_motors; ++i) {
+        delta[i]= 0;
+    }
+
+    // $J is first parameter
+    shift_parameter(parameters);
+    if(parameters.empty()) {
+        stream->printf("usage: $J X0.01 [F0.5] - axis can be XYZABC, optional speed is scale of max_rate\r\n");
+        return;
+    }
+
+    while(!parameters.empty()) {
+        string p= shift_parameter(parameters);
+
+        char ax= toupper(p[0]);
+        if(ax == 'F') {
+            // get speed scale
+            scale= strtof(p.substr(1).c_str(), NULL);
+            continue;
+        }
+
+        if(!((ax >= 'X' && ax <= 'Z') || (ax >= 'A' && ax <= 'C'))) {
+            stream->printf("error:bad axis %c\r\n", ax);
+            return;
+        }
+
+        uint8_t a= ax >= 'X' ? ax - 'X' : ax - 'A' + 3;
+        if(a >= n_motors) {
+            stream->printf("error:axis out of range %c\r\n", ax);
+            return;
+        }
+
+        delta[a]= strtof(p.substr(1).c_str(), NULL);
+    }
+
+    // select slowest axis rate to use
+    bool ok= false;
+    for (int i = 0; i < n_motors; ++i) {
+        if(delta[i] != 0) {
+            ok= true;
+            if(isnan(rate_mm_s)) {
+                rate_mm_s= THEROBOT->actuators[i]->get_max_rate();
+            }else{
+                rate_mm_s = std::min(rate_mm_s, THEROBOT->actuators[i]->get_max_rate());
+            }
+            //hstream->printf("%d %f F%f\n", i, delta[i], rate_mm_s);
+        }
+    }
+    if(!ok) {
+        stream->printf("error:no delta jog specified\r\n");
+        return;
+    }
+
+    //stream->printf("F%f\n", rate_mm_s*scale);
+
+    THEROBOT->delta_move(delta, rate_mm_s*scale, n_motors);
+    // turn off queue delay and run it now
+    THECONVEYOR->force_queue();
+}
 
 void SimpleShell::help_command( string parameters, StreamOutput *stream )
 {
@@ -1070,6 +1288,7 @@ void SimpleShell::help_command( string parameters, StreamOutput *stream )
     stream->printf("get [pos|wcs|state|status|fk|ik]\r\n");
     stream->printf("get temp [bed|hotend]\r\n");
     stream->printf("set_temp bed|hotend 185\r\n");
+    stream->printf("switch name [value]\r\n");
     stream->printf("net\r\n");
     stream->printf("load [file] - loads a configuration override file from soecified name or config-override\r\n");
     stream->printf("save [file] - saves a configuration override file as specified filename or as config-override\r\n");
@@ -1079,3 +1298,7 @@ void SimpleShell::help_command( string parameters, StreamOutput *stream )
     stream->printf("md5sum file - prints md5 sum of the given file\r\n");
 }
 
+void SimpleShell::mod_command( string parameters, StreamOutput *stream )
+{
+    // do nothing, juicyboard classes will handle
+}

@@ -8,7 +8,7 @@
 #include "libs/Kernel.h"
 
 #include "modules/tools/laser/Laser.h"
-#include "modules/tools/spindle/Spindle.h"
+#include "modules/tools/spindle/SpindleMaker.h"
 #include "modules/tools/extruder/ExtruderMaker.h"
 #include "modules/tools/temperaturecontrol/TemperatureControlPool.h"
 #include "modules/tools/endstops/Endstops.h"
@@ -21,10 +21,12 @@
 #include "FilamentDetector.h"
 #include "MotorDriverControl.h"
 
+#include "modules/JuicyBoard/R1000A/R1000A.h"
+#include "modules/JuicyBoard/R1001/R1001.h"
+
 #include "modules/robot/Conveyor.h"
 #include "modules/utils/simpleshell/SimpleShell.h"
 #include "modules/utils/configurator/Configurator.h"
-#include "modules/utils/currentcontrol/CurrentControl.h"
 #include "modules/utils/player/Player.h"
 #include "modules/utils/killbutton/KillButton.h"
 #include "modules/utils/PlayLed/PlayLed.h"
@@ -35,6 +37,7 @@
 #include "ConfigValue.h"
 #include "StepTicker.h"
 #include "SlowTicker.h"
+#include "Robot.h"
 
 // #include "libs/ChaNFSSD/SDFileSystem.h"
 #include "libs/nuts_bolts.h"
@@ -89,11 +92,6 @@ GPIO leds[5] = {
     GPIO(P4_28)
 };
 
-// debug pins, only used if defined in src/makefile
-#ifdef STEPTICKER_DEBUG_PIN
-GPIO stepticker_debug_pin(STEPTICKER_DEBUG_PIN);
-#endif
-
 void init() {
 
     // Default pins to low status
@@ -102,19 +100,10 @@ void init() {
         leds[i]= 0;
     }
 
-#ifdef STEPTICKER_DEBUG_PIN
-    stepticker_debug_pin.output();
-    stepticker_debug_pin= 0;
-#endif
-
     Kernel* kernel = new Kernel();
 
-    kernel->streams->printf("Smoothie Running @%ldMHz\r\n", SystemCoreClock / 1000000);
-    Version version;
-    kernel->streams->printf("  Build version %s, Build date %s\r\n", version.get_build(), version.get_build_date());
-#ifdef CNC
-    kernel->streams->printf("  CNC Build\r\n");
-#endif
+    kernel->streams->printf("Juicyware Running @%ldMHz\r\n", SystemCoreClock / 1000000);
+    SimpleShell::version_command("", kernel->streams);
 
     bool sdok= (sd.disk_initialize() == 0);
     if(!sdok) kernel->streams->printf("SDCard failed to initialize\r\n");
@@ -125,7 +114,7 @@ void init() {
 
 #ifdef DISABLEMSD
     // attempt to be able to disable msd in config
-    if(sdok && !kernel->config->value( disable_msd_checksum )->by_default(false)->as_bool()){
+    if(sdok && !kernel->config->value( disable_msd_checksum )->by_default(true)->as_bool()){
         // HACK to zero the memory USBMSD uses as it and its objects seem to not initialize properly in the ctor
         size_t n= sizeof(USBMSD);
         void *v = AHB0.alloc(n);
@@ -137,15 +126,16 @@ void init() {
     }
 #endif
 
-
     // Create and add main modules
     kernel->add_module( new(AHB0) Player() );
 
-    kernel->add_module( new(AHB0) CurrentControl() );
+//    kernel->add_module( new(AHB0) CurrentControl() );
+
+    kernel->add_module( new(AHB0) R1000A() );
+    kernel->add_module( new(AHB0) R1001() );
+
     kernel->add_module( new(AHB0) KillButton() );
     kernel->add_module( new(AHB0) PlayLed() );
-    kernel->add_module( new(AHB0) Endstops() );
-
 
     // these modules can be completely disabled in the Makefile by adding to EXCLUDE_MODULES
     #ifndef NO_TOOLS_SWITCH
@@ -165,11 +155,17 @@ void init() {
     tp->load_tools();
     delete tp;
     #endif
+    #ifndef NO_TOOLS_ENDSTOPS
+    kernel->add_module( new(AHB0) Endstops() );
+    #endif
     #ifndef NO_TOOLS_LASER
     kernel->add_module( new Laser() );
     #endif
     #ifndef NO_TOOLS_SPINDLE
-    kernel->add_module( new Spindle() );
+    SpindleMaker *sm= new SpindleMaker();
+    sm->load_spindle();
+    delete sm;
+    //kernel->add_module( new(AHB0) Spindle() );
     #endif
     #ifndef NO_UTILS_PANEL
     kernel->add_module( new(AHB0) Panel() );
@@ -181,20 +177,20 @@ void init() {
     kernel->add_module( new(AHB0) SCARAcal() );
     #endif
     #ifndef NO_TOOLS_ROTARYDELTACALIBRATION
-    kernel->add_module( new RotaryDeltaCalibration() );
+    kernel->add_module( new(AHB0) RotaryDeltaCalibration() );
     #endif
     #ifndef NONETWORK
     kernel->add_module( new Network() );
     #endif
     #ifndef NO_TOOLS_TEMPERATURESWITCH
     // Must be loaded after TemperatureControl
-    kernel->add_module( new TemperatureSwitch() );
+    kernel->add_module( new(AHB0) TemperatureSwitch() );
     #endif
     #ifndef NO_TOOLS_DRILLINGCYCLES
-    kernel->add_module( new Drillingcycles() );
+    kernel->add_module( new(AHB0) Drillingcycles() );
     #endif
     #ifndef NO_TOOLS_FILAMENTDETECTOR
-    kernel->add_module( new FilamentDetector() );
+    kernel->add_module( new(AHB0) FilamentDetector() );
     #endif
     #ifndef NO_UTILS_MOTORDRIVERCONTROL
     kernel->add_module( new MotorDriverControl(0) );
@@ -224,9 +220,9 @@ void init() {
     if(t > 0.1F) {
         // NOTE setting WDT_RESET with the current bootloader would leave it in DFU mode which would be suboptimal
         kernel->add_module( new Watchdog(t*1000000, WDT_MRI)); // WDT_RESET));
-        kernel->streams->printf("Watchdog enabled for %f seconds\n", t);
+        kernel->streams->printf("Watchdog enabled for %f seconds\r\n", t);
     }else{
-        kernel->streams->printf("WARNING Watchdog is disabled\n");
+        kernel->streams->printf("WARNING Watchdog is disabled\r\n");
     }
 
 
@@ -250,19 +246,23 @@ void init() {
         FILE *fp= fopen(kernel->config_override_filename(), "r");
         if(fp != NULL) {
             char buf[132];
-            kernel->streams->printf("Loading config override file: %s...\n", kernel->config_override_filename());
+            kernel->streams->printf("Loading config override file: %s...\r\n", kernel->config_override_filename());
             while(fgets(buf, sizeof buf, fp) != NULL) {
                 kernel->streams->printf("  %s", buf);
                 if(buf[0] == ';') continue; // skip the comments
                 struct SerialMessage message= {&(StreamOutput::NullStream), buf};
                 kernel->call_event(ON_CONSOLE_LINE_RECEIVED, &message);
             }
-            kernel->streams->printf("config override file executed\n");
+            kernel->streams->printf("config override file executed\r\n");
             fclose(fp);
         }
     }
 
+
+
+
     // start the timers and interrupts
+    THEKERNEL->conveyor->start(THEROBOT->get_number_registered_motors());
     THEKERNEL->step_ticker->start();
     THEKERNEL->slow_ticker->start();
 }

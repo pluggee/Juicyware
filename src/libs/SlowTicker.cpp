@@ -5,8 +5,6 @@
       You should have received a copy of the GNU General Public License along with Smoothie. If not, see <http://www.gnu.org/licenses/>.
 */
 
-using namespace std;
-#include <vector>
 #include "libs/nuts_bolts.h"
 #include "libs/Module.h"
 #include "libs/Kernel.h"
@@ -26,8 +24,9 @@ SlowTicker* global_slow_ticker;
 SlowTicker::SlowTicker(){
     global_slow_ticker = this;
 
+    // Juicyware: eliminated ISP button from ticker
     // ISP button FIXME: WHy is this here?
-    ispbtn.from_string("2.10")->as_input()->pull_up();
+//    ispbtn.from_string("2.10")->as_input()->pull_up();
 
     LPC_SC->PCONP |= (1 << 22);     // Power Ticker ON
     LPC_TIM2->MCR = 3;              // Match on MR0, reset on MR0
@@ -61,7 +60,7 @@ void SlowTicker::set_frequency( int frequency ){
 // The actual interrupt being called by the timer, this is where work is done
 void SlowTicker::tick(){
 
-    // Call all hooks that need to be called ( bresenham )
+    // Call all hooks that need to be called
     for (Hook* hook : this->hooks){
         hook->countdown -= this->interval;
         if (hook->countdown < 0)
@@ -71,7 +70,7 @@ void SlowTicker::tick(){
         }
     }
 
-    // deduct tick time from secound counter
+    // deduct tick time from second counter
     flag_1s_count -= this->interval;
     // if a whole second has elapsed,
     if (flag_1s_count < 0)
@@ -82,10 +81,11 @@ void SlowTicker::tick(){
         flag_1s_flag++;
     }
 
+    // Juicyware: eliminated ISP button from ticker
     // Enter MRI mode if the ISP button is pressed
     // TODO: This should have it's own module
-    if (ispbtn.get() == 0)
-        __debugbreak();
+//    if (ispbtn.get() == 0)
+//        __debugbreak();
 
 }
 

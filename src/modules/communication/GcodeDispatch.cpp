@@ -25,13 +25,13 @@
 #include "SimpleShell.h"
 #include "utils.h"
 #include "LPC17xx.h"
+#include "version.h"
 
-#define return_error_on_unhandled_gcode_checksum    CHECKSUM("return_error_on_unhandled_gcode")
 #define panel_display_message_checksum CHECKSUM("display_message")
 #define panel_checksum             CHECKSUM("panel")
 
 // goes in Flash, list of Mxxx codes that are allowed when in Halted state
-static const int allowed_mcodes[]= {2,5,9,30,105,114,119,80,81,911,503,106,107}; // get temp, get pos, get endstops etc
+static const int allowed_mcodes[]= {2,5,9,30,105,114,115,119,80,81,911,503,106,107}; // get temp, get pos, get endstops etc
 static bool is_allowed_mcode(int m) {
     for (size_t i = 0; i < sizeof(allowed_mcodes)/sizeof(int); ++i) {
         if(allowed_mcodes[i] == m) return true;
@@ -86,8 +86,8 @@ try_again:
         //Get linenumber
         if ( first_char == 'N' ) {
             Gcode full_line = Gcode(possible_command, new_message.stream, false);
-            ln = (int) full_line.get_value('N');
-            int chksum = (int) full_line.get_value('*');
+            ln = (int) full_line.get_int('N');
+            int chksum = (int) full_line.get_int('*');
 
             //Catch message if it is M110: Set Current Line Number
             if ( full_line.has_m ) {
@@ -100,17 +100,24 @@ try_again:
 
             //Strip checksum value from possible_command
             size_t chkpos = possible_command.find_first_of("*");
-            possible_command = possible_command.substr(0, chkpos);
-            //Calculate checksum
+
+			//Calculate checksum
             if ( chkpos != string::npos ) {
+				possible_command = possible_command.substr(0, chkpos);
                 for (auto c = possible_command.cbegin(); *c != '*' && c != possible_command.cend(); c++)
                     cs = cs ^ *c;
                 cs &= 0xff;  // Defensive programming...
                 cs -= chksum;
-            }
+			}
+
             //Strip line number value from possible_command
-            size_t lnsize = possible_command.find_first_not_of("N0123456789.,- ");
-            possible_command = possible_command.substr(lnsize);
+			size_t lnsize = possible_command.find_first_not_of("N0123456789.,- ");
+			if(lnsize != string::npos) {
+				possible_command = possible_command.substr(lnsize);
+			}else{
+				// it is a blank line
+				possible_command.clear();
+			}
 
         } else {
             //Assume checks succeeded
@@ -131,6 +138,7 @@ try_again:
                 currentline = nextline;
             }
 
+            bool sent_ok= false; // used for G1 optimization
             while(possible_command.size() > 0) {
                 // assumes G or M are always the first on the line
                 size_t nextcmd = possible_command.find_first_of("GM", 2);
@@ -151,9 +159,13 @@ try_again:
                     if(THEKERNEL->is_halted()) {
                         // we ignore all commands until M999, unless it is in the exceptions list (like M105 get temp)
                         if(gcode->has_m && gcode->m == 999) {
-                            THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
-
-                            // fall through and pass onto other modules
+                            if(THEKERNEL->is_halted()) {
+                                THEKERNEL->call_event(ON_HALT, (void *)1); // clears on_halt
+                                new_message.stream->printf("WARNING: After HALT you should HOME as position is currently unknown\n");
+                            }
+                            new_message.stream->printf("ok\n");
+                            delete gcode;
+                            return;
 
                         }else if(!is_allowed_mcode(gcode->m)) {
                             // ignore everything, return error string to host
@@ -164,7 +176,7 @@ try_again:
                                 new_message.stream->printf("!!\r\n");
                             }
                             delete gcode;
-                            continue;
+                            return;
                         }
                     }
 
@@ -196,8 +208,14 @@ try_again:
                                 }
                             }
                             // makes it handle the parameters as a machine position
-                            THEKERNEL->robot->next_command_is_MCS= true;
+                            THEROBOT->next_command_is_MCS= true;
 
+                        } else if(gcode->g == 1) {
+                            // optimize G1 to send ok immediately (one per line) before it is planned
+                            if(!sent_ok) {
+                                sent_ok= true;
+                                new_message.stream->printf("ok\n");
+                            }
                         }
 
                         // remember last modal group 1 code
@@ -249,6 +267,30 @@ try_again:
                                 delete gcode;
                                 return;
 
+                            case 115: { // M115 Get firmware version and capabilities
+                                Version vers;
+
+                                new_message.stream->printf("FIRMWARE_NAME:Smoothieware, FIRMWARE_URL:http%%3A//smoothieware.org, X-SOURCE_CODE_URL:https://github.com/Smoothieware/Smoothieware, FIRMWARE_VERSION:%s, X-FIRMWARE_BUILD_DATE:%s, X-SYSTEM_CLOCK:%ldMHz, X-AXES:%d, X-GRBL_MODE:%d", vers.get_build(), vers.get_build_date(), SystemCoreClock / 1000000, MAX_ROBOT_ACTUATORS, THEKERNEL->is_grbl_mode());
+
+                                #ifdef CNC
+                                new_message.stream->printf(", X-CNC:1");
+                                #else
+                                new_message.stream->printf(", X-CNC:0");
+                                #endif
+
+                                #ifdef DISABLEMSD
+                                new_message.stream->printf(", X-MSD:0");
+                                #else
+                                new_message.stream->printf(", X-MSD:1");
+                                #endif
+
+                                if(THEKERNEL->is_bad_mcu()) {
+                                    new_message.stream->printf(", X-WARNING:This is not a sanctioned board and may be unreliable and even dangerous. This MCU is deprecated, and cannot guarantee proper function\n");
+                                }
+                                new_message.stream->printf("\nok\n");
+                                return;
+                            }
+
                             case 117: // M117 is a special non compliant Gcode as it allows arbitrary text on the line following the command
                             {    // concatenate the command again and send to panel if enabled
                                 string str= single_command.substr(4) + possible_command;
@@ -283,7 +325,7 @@ try_again:
                             }
 
                             case 500: // M500 save volatile settings to config-override
-                                THEKERNEL->conveyor->wait_for_empty_queue(); //just to be safe as it can take a while to run
+                                THEKERNEL->conveyor->wait_for_idle(); //just to be safe as it can take a while to run
                                 //remove(THEKERNEL->config_override_filename()); // seems to cause a hang every now and then
                                 __disable_irq();
                                 {
@@ -307,7 +349,7 @@ try_again:
                                     string arg= get_arguments(single_command + possible_command); // rest of line is filename
                                     if(arg.empty()) arg= "/sd/config-override";
                                     else arg= "/sd/config-override." + arg;
-                                    new_message.stream->printf("args: <%s>\n", arg.c_str());
+                                    //new_message.stream->printf("args: <%s>\n", arg.c_str());
                                     SimpleShell::parse_command((gcode->m == 501) ? "load_command" : "save_command", arg, new_message.stream);
                                 }
                                 delete gcode;
@@ -343,7 +385,7 @@ try_again:
                     if (gcode->is_error) {
                         // report error
                         if(THEKERNEL->is_grbl_mode()) {
-                            new_message.stream->printf("error: ");
+                            new_message.stream->printf("error:");
                         }else{
                             new_message.stream->printf("Error: ");
                         }
@@ -356,7 +398,11 @@ try_again:
                             new_message.stream->printf("unknown\r\n");
                         }
 
-                    }else{
+                        // we cannot continue safely after an error so we enter HALT state
+                        new_message.stream->printf("Entering Alarm/Halt state\n");
+                        THEKERNEL->call_event(ON_HALT, nullptr);
+
+                    }else if(!sent_ok) {
 
                         if(gcode->add_nl)
                             new_message.stream->printf("\r\n");
@@ -399,7 +445,6 @@ try_again:
                     }
 
                     single_command.append("\n");
-                    static int cnt = 0;
                     if(fwrite(single_command.c_str(), 1, single_command.size(), upload_fd) != single_command.size()) {
                         // error writing to file
                         new_message.stream->printf("Error:error writing to file.\r\n");
@@ -408,14 +453,7 @@ try_again:
                         continue;
 
                     } else {
-                        cnt += single_command.size();
-                        if (cnt > 400) {
-                            // HACK ALERT to get around fwrite corruption close and re open for append
-                            fclose(upload_fd);
-                            upload_fd = fopen(upload_filename.c_str(), "a");
-                            cnt = 0;
-                        }
-                        new_message.stream->printf("ok\r\n");
+                         new_message.stream->printf("ok\r\n");
                         //printf("uploading file write ok\n");
                     }
                 }
@@ -426,16 +464,27 @@ try_again:
             new_message.stream->printf("rs N%d\r\n", nextline);
         }
 
+    } else if ( first_char == ';' || first_char == '(' || first_char == '\n' || first_char == '\r' ) {
+        // Ignore comments and blank lines
+        new_message.stream->printf("ok\n");
+
     } else if( (n=possible_command.find_first_of("XYZF")) == 0 || (first_char == ' ' && n != string::npos) ) {
         // handle pycam syntax, use last modal group 1 command and resubmit if an X Y Z or F is found on its own line
         char buf[6];
-        snprintf(buf, sizeof(buf), "G%d ", modal_group_1);
+        if(possible_command[n] == 'F') {
+            // F on its own always applies to G1
+            strcpy(buf,"G1 ");
+        }else{
+            // use last modal command (G1 or G0 etc)
+            snprintf(buf, sizeof(buf), "G%d ", modal_group_1);
+        }
         possible_command.insert(0, buf);
         goto try_again;
 
-        // Ignore comments and blank lines
-    } else if ( first_char == ';' || first_char == '(' || first_char == ' ' || first_char == '\n' || first_char == '\r' ) {
-        new_message.stream->printf("ok\r\n");
+
+    } else {
+        // an uppercase non command word on its own (except XYZF) just returns ok, we could add an error but no hosts expect that.
+        new_message.stream->printf("ok - ignored\n");
     }
 }
 
