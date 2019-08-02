@@ -14,7 +14,7 @@ RSTpin = 11
 # BCM27 is connector pin 13
 ISPpin = 13
 
-GPIO.cleanup()
+#GPIO.cleanup()
 GPIO.setup(RSTpin, GPIO.OUT)
 GPIO.setup(ISPpin, GPIO.IN)
 
