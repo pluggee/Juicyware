@@ -344,6 +344,10 @@ void R1000A::on_console_line_received(void* argument){
 
             THEKERNEL->i2c->enablemodI2C();
         }
+        else if (cmd == "testmodbus"){
+            THEKERNEL->streams->printf("Sending test string to modbus\r\n");
+            THEKERNEL->modbus->send_test_string();
+        }
     }
 }
 

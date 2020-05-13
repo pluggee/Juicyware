@@ -35,7 +35,8 @@
 #endif
 
 // Juicyboard specific
-#include "modules/JuicyBoard/R1000A_I2C/R1000A_I2C.h"
+//#include "modules/JuicyBoard/R1000A_I2C/R1000A_I2C.h"
+//#include "modules/JuicyBoard/R1000A_MODBUS/R1000A_MODBUS.h"
 
 #include "platform_memory.h"
 
@@ -85,10 +86,6 @@ Kernel::Kernel()
 
     this->current_path   = "/";
 
-    // Juicyware
-    // add Juicyboard I2C as part of kernel to save memory
-    this->i2c = new R1000A_I2C();
-
     // Configure UART depending on MRI config
     // Match up the SerialConsole to MRI UART. This makes it easy to use only one UART for both debug and actual commands.
     NVIC_SetPriorityGrouping(0);
@@ -116,6 +113,11 @@ Kernel::Kernel()
     if(this->serial == NULL) {
         this->serial = new(AHB0) SerialConsole(USBTX, USBRX, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
     }
+
+    // Juicyware
+    // add Juicyboard I2C as part of kernel to save memory
+    this->i2c = new R1000A_I2C();
+    this->modbus = new R1000A_MODBUS();
 
     //some boards don't have leds.. TOO BAD!
     this->use_leds = !this->config->value( disable_leds_checksum )->by_default(false)->as_bool();
