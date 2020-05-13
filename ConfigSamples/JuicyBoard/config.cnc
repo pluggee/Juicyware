@@ -54,6 +54,13 @@ stepmotor_4_current                          1000
 stepmotor_4_decay_mode                       fast
 gamma_max_rate                               5000.0           # mm/min
 
+# RS485 modbus config
+modbus.slot                                  2
+modbus.baud                                  9600
+modbus.databits                              8
+modbus.stopbits                              1
+modbus.parity                                N
+
 ## System configuration
 # Serial communications configuration ( baud rate defaults to 9600 if undefined )
 uart0.baud_rate                              115200           # Baud rate for the default hardware serial port

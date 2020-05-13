@@ -348,6 +348,12 @@ void R1000A::on_console_line_received(void* argument){
             THEKERNEL->streams->printf("Sending test string to modbus\r\n");
             THEKERNEL->modbus->send_test_string();
         }
+        else if (cmd == "setbed"){
+            int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
+            int tempval =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
+
+            THEKERNEL->modbus->write_holding_register(19, regaddr, tempval);
+        }
     }
 }
 
