@@ -87,12 +87,15 @@ void R1000A_MODBUS::send_test_string()
     telegram[5] = '.';   // number of coils to read LSB  
     telegram[6] = '\r';              // CRC LSB
     telegram[7] = '\n';       // CRC MSB
+    dir_output->set();
     this->serial->write(telegram, 8);
+    delay((int) ceil(50 + 8 * delay_time));
+    dir_output->clear();
 }
 
 void R1000A_MODBUS::calculate_delay(int baudrate, int bits, int parity, int stop) {
 
-    float bittime = 1000.0 / baudrate;
+    float bittime = 1000.0 / (float)baudrate;
     // here we calculate how long a byte with all surrounding bits take
     // startbit + number of bits + parity bit + stop bit
     delay_time = bittime * (1 + bits + parity + 1);
@@ -120,14 +123,67 @@ void R1000A_MODBUS::read_coil(int slave_addr, int coil_addr, int n_coils){
     telegram[7] = (crc >> 8);       // CRC MSB
     dir_output->set();
     serial->write(telegram,8);
-    delay((int) ceil(50 + 8 * delay_time));
+    //delay((int) ceil(50 + 8 * delay_time));
     dir_output->clear();
     // TODO: read reply from buffer and return it
+    // add delay for slave to respond
+    // read and return data from buffer
 }
 
-void R1000A_MODBUS::read_holding_register(int slave_addr, int reg_addr, int n_regs){
+int R1000A_MODBUS::read_holding_register(int slave_addr, int reg_addr){
+    char telegram[8];
+    unsigned int crc;
+    telegram[0] = slave_addr;       // Slave address
+    telegram[1] = 0x03;             // Function code
+    telegram[2] = (reg_addr >> 8);  // Register address MSB
+    telegram[3] = reg_addr & 0xFF;  // Register address LSB
+    telegram[4] = 0;                // number of coils to read MSB
+    telegram[5] = 0x1;              // number of coils to read LSB
+    crc = crc16(telegram, 6);       
+    telegram[6] = crc;              // CRC LSB
+    telegram[7] = (crc >> 8);       // CRC MSB
+    dir_output->set();
+    serial->write(telegram,8);
+    delay((int) ceil(8 * delay_time));
+    dir_output->clear();
+    delay((int) ceil(100 + 8 * delay_time));
 
-    // TODO: implement this
+    //delay((int) ceil(50 + 8 * delay_time));     // wait for buffer to receive data from slave
+    /*
+    while (serial->readable() < 7){
+        // stick here until some characters are available
+    }*/
+
+    int buffin[12];                 // oversized buffer
+    for (int i = 0; i < 8; i++){
+            // read characters from buffer
+            if (serial->readable() != 0)
+                buffin[i] = serial->getc();
+        }
+
+    return (buffin[3] << 8) | buffin[4];
+       
+    /*
+    if (serial->readable() > 0) {
+        // buffer has data, read and process
+        int buffin[8];
+        for (int i = 0; i < 0; i++){
+            // read characters from buffer
+            buffin[i] = serial->getc();
+        }
+
+        return buffin[4];
+    }
+    else
+    {
+        return -999;
+    }
+    */
+    
+
+    // TODO: read reply from buffer and return it
+    // add delay for slave to respond
+    // read and return data from buffer
 }
 
 void R1000A_MODBUS::write_coil(int slave_addr, int coil_addr, bool data){

@@ -352,7 +352,13 @@ void R1000A::on_console_line_received(void* argument){
             int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
             int tempval =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
 
-            THEKERNEL->modbus->write_holding_register(19, regaddr, tempval);
+            THEKERNEL->modbus->write_holding_register(1, regaddr, tempval);
+            THEKERNEL->streams->printf("Setting bed modbus bed reg %d to %d\r\n", regaddr, tempval);
+        }
+        else if (cmd == "readbed"){
+            int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
+            int val = THEKERNEL->modbus->read_holding_register(1, regaddr);
+            THEKERNEL->streams->printf("modbus bed reg %d reads %d\r\n", regaddr, val);
         }
     }
 }

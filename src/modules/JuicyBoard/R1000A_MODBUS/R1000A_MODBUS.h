@@ -31,7 +31,7 @@ class R1000A_MODBUS {
         void delay(unsigned int);
 
         void read_coil(int slave_addr, int coil_addr, int n_coils);
-        void read_holding_register(int slave_addr, int reg_addr, int n_regs);
+        int read_holding_register(int slave_addr, int reg_addr);
         void write_coil(int slave_addr, int coil_addr, bool data);
         void write_holding_register(int slave_addr, int reg_addr, int data);
         unsigned int crc16(char *data, unsigned int len); 
