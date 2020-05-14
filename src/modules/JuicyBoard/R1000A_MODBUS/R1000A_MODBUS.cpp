@@ -146,13 +146,7 @@ int R1000A_MODBUS::read_holding_register(int slave_addr, int reg_addr){
     serial->write(telegram,8);
     delay((int) ceil(8 * delay_time));
     dir_output->clear();
-    delay((int) ceil(100 + 8 * delay_time));
-
-    //delay((int) ceil(50 + 8 * delay_time));     // wait for buffer to receive data from slave
-    /*
-    while (serial->readable() < 7){
-        // stick here until some characters are available
-    }*/
+    delay((int) ceil(100 + 8 * delay_time));            // readlion needs an extra 100ms delay!!
 
     int buffin[12];                 // oversized buffer
     for (int i = 0; i < 8; i++){
@@ -160,30 +154,7 @@ int R1000A_MODBUS::read_holding_register(int slave_addr, int reg_addr){
             if (serial->readable() != 0)
                 buffin[i] = serial->getc();
         }
-
     return (buffin[3] << 8) | buffin[4];
-       
-    /*
-    if (serial->readable() > 0) {
-        // buffer has data, read and process
-        int buffin[8];
-        for (int i = 0; i < 0; i++){
-            // read characters from buffer
-            buffin[i] = serial->getc();
-        }
-
-        return buffin[4];
-    }
-    else
-    {
-        return -999;
-    }
-    */
-    
-
-    // TODO: read reply from buffer and return it
-    // add delay for slave to respond
-    // read and return data from buffer
 }
 
 void R1000A_MODBUS::write_coil(int slave_addr, int coil_addr, bool data){
