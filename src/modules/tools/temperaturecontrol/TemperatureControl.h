@@ -54,7 +54,7 @@ class TemperatureControl : public Module {
         TempSensor *sensor;
         
         // Juicyboard PXU (Redlion) specific variable
-        bool isPXU;
+        bool isMODBUS;
 
         float i_max;
         int o;
@@ -63,7 +63,6 @@ class TemperatureControl : public Module {
         Pwm  heater_pin;
 
         std::string designator;
-
 
         float hysteresis;
         float iTerm;

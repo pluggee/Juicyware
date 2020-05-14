@@ -18,7 +18,8 @@
 PXUsensor::PXUsensor(){
     // Default Constructor
     // do nothing
-    current_temp = -1;       // initial value
+    current_temp = -1;      // initial value
+    
 }
 
 PXUsensor::~PXUsensor(){
@@ -27,6 +28,7 @@ PXUsensor::~PXUsensor(){
 void PXUsensor::UpdateConfig(uint16_t module_checksum, uint16_t name_checksum){
     // load slot and channel numbers from config file
     modbus_addr = THEKERNEL->config->value(module_checksum, name_checksum, maddr_checksum)->by_default(1)->as_int();
+    set_temperature(0);     // turn off heater on module load
 }
 
 float PXUsensor::get_temperature(){
