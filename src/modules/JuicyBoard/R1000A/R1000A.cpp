@@ -348,16 +348,18 @@ void R1000A::on_console_line_received(void* argument){
             THEKERNEL->streams->printf("Sending test string to modbus\r\n");
             THEKERNEL->modbus->send_test_string();
         }
-        else if (cmd == "setbed"){
+        else if (cmd == "writemodbus"){
+            int slaveaddr = (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10); 
             int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
             int tempval =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
 
-            THEKERNEL->modbus->write_holding_register(1, regaddr, tempval);
+            THEKERNEL->modbus->write_holding_register(slaveaddr, regaddr, tempval);
             THEKERNEL->streams->printf("Setting bed modbus bed reg %d to %d\r\n", regaddr, tempval);
         }
-        else if (cmd == "readbed"){
+        else if (cmd == "readmodbus"){
+            int slaveaddr = (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
             int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
-            int val = THEKERNEL->modbus->read_holding_register(1, regaddr);
+            int val = THEKERNEL->modbus->read_holding_register(slaveaddr, regaddr);
             THEKERNEL->streams->printf("modbus bed reg %d reads %d\r\n", regaddr, val);
         }
     }

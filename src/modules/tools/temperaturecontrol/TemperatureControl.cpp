@@ -30,9 +30,11 @@
 #include "Thermistor.h"
 #include "max31855.h"
 #include "AD8495.h"
+#include "PT100_E3D.h"
+
 // adding R1008 for JuicyBoard
 #include "modules/JuicyBoard/R1008/R1008.h"
-#include "PT100_E3D.h"
+#include "modules/JuicyBoard/PXUsensor/PXUsensor.h"
 
 #include "MRI_Hooks.h"
 
@@ -182,6 +184,9 @@ void TemperatureControl::load_config()
     // Instantiate correct sensor (TBD: TempSensor factory?)
     delete sensor;
     sensor = nullptr; // In case we fail to create a new sensor.
+    
+    isPXU = false;      // Juicyboard PXU specific, initialize to false
+
     if(sensor_type.compare("thermistor") == 0) {
         sensor = new Thermistor();
     } else if(sensor_type.compare("max31855") == 0) {
@@ -193,6 +198,9 @@ void TemperatureControl::load_config()
         sensor = new R1008();
     } else if(sensor_type.compare("pt100_e3d") == 0) {
         sensor = new PT100_E3D();
+    } else if(sensor_type.compare("pxu") == 0){
+        sensor = new PXUsensor();
+        isPXU = true;
     } else {
         sensor = new TempSensor(); // A dummy implementation
     }
@@ -217,9 +225,11 @@ void TemperatureControl::load_config()
         THEKERNEL->slow_ticker->attach( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, pwm_frequency_checksum)->by_default(2000)->as_number(), &heater_pin, &Pwm::on_tick);
     }
 
+    // for Juicyboard PXU disable temperature control loop
 
     // reading tick
     THEKERNEL->slow_ticker->attach( this->readings_per_second, this, &TemperatureControl::thermistor_read_tick );
+
     this->PIDdt = 1.0 / this->readings_per_second;
 
     // PID
@@ -352,6 +362,8 @@ void TemperatureControl::on_gcode_received(void *argument)
                 if (v == 0.0) {
                     this->target_temperature = UNDEFINED;
                     this->heater_pin.set((this->o = 0));
+                    if (this->isPXU)
+                        this->set_desired_temperature(-10);       // Juicyboard PXU specific
                 } else {
                     this->set_desired_temperature(v);
                     // wait for temp to be reached, no more gcodes will be fetched until this is complete
@@ -361,7 +373,6 @@ void TemperatureControl::on_gcode_received(void *argument)
                             THEKERNEL->call_event(ON_HALT, nullptr);
                             return;
                         }
-
                         this->waiting = true; // on_second_tick will announce temps
                         while ( get_temperature() < target_temperature ) {
                             THEKERNEL->call_event(ON_IDLE, this);
@@ -453,6 +464,11 @@ void TemperatureControl::set_desired_temperature(float desired_temperature)
     else if (desired_temperature == 2.0F)
         desired_temperature = preset2;
 
+    // Juicyboard specific if fork here
+    if (this->isPXU){
+        sensor->set_temperature(desired_temperature);
+    }
+    else {
     float last_target_temperature= target_temperature;
     target_temperature = desired_temperature;
     if (desired_temperature <= 0.0F){
@@ -470,6 +486,7 @@ void TemperatureControl::set_desired_temperature(float desired_temperature)
 
     // reset the runaway state, even if it was a temp change
     this->runaway_state = NOT_HEATING;
+    }
 }
 
 float TemperatureControl::get_temperature()
@@ -549,8 +566,13 @@ void TemperatureControl::on_second_tick(void *argument)
 {
 
     // If waiting for a temperature to be reach, display it to keep host programs up to date on the progress
-    if (waiting)
+    if (waiting){
+        if(this->isPXU)
+            sensor->pull_temperature();          // onlly read temperature from PXU when waiting, or else the printer will freeze
+                                                // it takes 100ms to read from PXU device
         THEKERNEL->streams->printf("%s:%3.1f /%3.1f @%d\n", designator.c_str(), get_temperature(), ((target_temperature <= 0) ? 0.0 : target_temperature), o);
+    }
+        
 
     // Check whether or not there is a temperature runaway issue, if so stop everything and report it
     if(THEKERNEL->is_halted()) return;
@@ -563,7 +585,9 @@ void TemperatureControl::on_second_tick(void *argument)
 
     if(this->target_temperature <= 0){ // If we are not trying to heat, state is NOT_HEATING
         this->runaway_state = NOT_HEATING;
-
+        if(this->isPXU)
+            sensor->pull_temperature();          // onlly read temperature from PXU when waiting, or else the printer will freeze
+                                                // it takes 100ms to read from PXU device
     }else{
         float current_temperature= this->get_temperature();
         // heater is active

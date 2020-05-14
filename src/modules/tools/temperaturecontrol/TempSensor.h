@@ -22,6 +22,9 @@ public:
     // Return temperature in degrees Celsius.
     virtual float get_temperature() { return -1.0F; }
 
+    virtual void pull_temperature() {}      // Juicyboard PXU specific, forces temperature to be read from PXU, 100ms delay
+    virtual void set_temperature(float) {}  // Juicyboard PXU specific, sets PXU temperature through modbus
+
     typedef std::map<char, float> sensor_options_t;
     virtual bool set_optional(const sensor_options_t& options) { return false; }
     virtual bool get_optional(sensor_options_t& options) { return false; }

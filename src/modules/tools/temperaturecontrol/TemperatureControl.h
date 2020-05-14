@@ -52,6 +52,10 @@ class TemperatureControl : public Module {
         float preset2;
 
         TempSensor *sensor;
+        
+        // Juicyboard PXU (Redlion) specific variable
+        bool isPXU;
+
         float i_max;
         int o;
         float last_reading;
