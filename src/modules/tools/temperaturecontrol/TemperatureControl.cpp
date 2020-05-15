@@ -577,13 +577,7 @@ void TemperatureControl::on_second_tick(void *argument)
         THEKERNEL->streams->printf("%s:%3.1f /%3.1f @%d\n", designator.c_str(), get_temperature(), ((target_temperature <= 0) ? 0.0 : target_temperature), o);
     }
 
-    if (isMODBUS){
-        if ((waiting) | (this->target_temperature <= 0)){
-            sensor->pull_temperature();         // onlly read temperature from PXU when waiting, or else the printer will freeze
-                                                // it takes 100ms to read from PXU device
-        }
-    }
-        
+    sensor->pull_temperature();
 
     // Check whether or not there is a temperature runaway issue, if so stop everything and report it
     if(THEKERNEL->is_halted()) return;

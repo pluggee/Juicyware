@@ -359,7 +359,7 @@ void R1000A::on_console_line_received(void* argument){
         else if (cmd == "readmodbus"){
             int slaveaddr = (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
             int regaddr =  (int)strtol(shift_parameter(possible_command).c_str(), NULL, 10);
-            int val = THEKERNEL->modbus->read_holding_register(slaveaddr, regaddr);
+            int val = THEKERNEL->modbus->read_holding_register(slaveaddr, regaddr, 500);
             THEKERNEL->streams->printf("modbus bed reg %d reads %d\r\n", regaddr, val);
         }
     }
