@@ -35,7 +35,9 @@
 #endif
 
 // Juicyboard specific
-#include "modules/JuicyBoard/R1000A_I2C/R1000A_I2C.h"
+//#include "modules/JuicyBoard/R1000A_I2C/R1000A_I2C.h"
+//#include "modules/JuicyBoard/R1000A_MODBUS/R1000A_MODBUS.h"
+#include "Pin.h"
 
 #include "platform_memory.h"
 
@@ -54,6 +56,13 @@
 #define grbl_mode_checksum                          CHECKSUM("grbl_mode")
 #define feed_hold_enable_checksum                   CHECKSUM("enable_feed_hold")
 #define ok_per_line_checksum                        CHECKSUM("ok_per_line")
+
+#define modbus_checksum             CHECKSUM("modbus")
+#define slotnum_checksum            CHECKSUM("slot")
+#define baud_checksum               CHECKSUM("baud")
+#define databits_checksum           CHECKSUM("databits")
+#define stopbits_checksum           CHECKSUM("stopbits")
+#define parity_checksum             CHECKSUM("parity")
 
 Kernel* Kernel::instance;
 
@@ -85,10 +94,6 @@ Kernel::Kernel()
 
     this->current_path   = "/";
 
-    // Juicyware
-    // add Juicyboard I2C as part of kernel to save memory
-    this->i2c = new R1000A_I2C();
-
     // Configure UART depending on MRI config
     // Match up the SerialConsole to MRI UART. This makes it easy to use only one UART for both debug and actual commands.
     NVIC_SetPriorityGrouping(0);
@@ -116,6 +121,16 @@ Kernel::Kernel()
     if(this->serial == NULL) {
         this->serial = new(AHB0) SerialConsole(USBTX, USBRX, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
     }
+
+    // Juicyware
+    // add Juicyboard I2C as part of kernel to save memory
+    this->i2c = new R1000A_I2C();
+    this->modbus = new R1000A_MODBUS(   this->config->value(modbus_checksum, slotnum_checksum)->by_default(0)->as_int() ,
+                                        this->config->value(modbus_checksum, baud_checksum)->by_default(9600)->as_int() ,
+                                        this->config->value(modbus_checksum, databits_checksum)->by_default(8)->as_int() ,
+                                        this->config->value(modbus_checksum, stopbits_checksum)->by_default(1)->as_int() ,
+                                        this->config->value(modbus_checksum, parity_checksum)->by_default("N")->as_string()
+                                            );
 
     //some boards don't have leds.. TOO BAD!
     this->use_leds = !this->config->value( disable_leds_checksum )->by_default(false)->as_bool();

@@ -19,6 +19,7 @@
 
 // Juicyboard specific
 #include "modules/JuicyBoard/R1000A_I2C/R1000A_I2C.h"
+#include "modules/JuicyBoard/R1000A_MODBUS/R1000A_MODBUS.h"
 
 //Module manager
 class Config;
@@ -75,6 +76,7 @@ class Kernel {
 
         // adding I2C for Juicyboard
         R1000A_I2C*       i2c;
+        R1000A_MODBUS*    modbus;
 
         SlowTicker*       slow_ticker;
         StepTicker*       step_ticker;

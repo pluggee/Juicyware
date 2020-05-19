@@ -30,9 +30,11 @@
 #include "Thermistor.h"
 #include "max31855.h"
 #include "AD8495.h"
+#include "PT100_E3D.h"
+
 // adding R1008 for JuicyBoard
 #include "modules/JuicyBoard/R1008/R1008.h"
-#include "PT100_E3D.h"
+#include "modules/JuicyBoard/PXUsensor/PXUsensor.h"
 
 #include "MRI_Hooks.h"
 
@@ -101,7 +103,8 @@ void TemperatureControl::on_module_loaded()
     this->register_for_event(ON_GET_PUBLIC_DATA);
     this->register_for_event(ON_IDLE);
 
-    if(!this->readonly) {
+
+    if (!this->readonly) {
         this->register_for_event(ON_SECOND_TICK);
         this->register_for_event(ON_MAIN_LOOP);
         this->register_for_event(ON_SET_PUBLIC_DATA);
@@ -182,19 +185,30 @@ void TemperatureControl::load_config()
     // Instantiate correct sensor (TBD: TempSensor factory?)
     delete sensor;
     sensor = nullptr; // In case we fail to create a new sensor.
+    
     if(sensor_type.compare("thermistor") == 0) {
         sensor = new Thermistor();
+        isMODBUS = false;               // Juicyboard MODBUS specific
     } else if(sensor_type.compare("max31855") == 0) {
         sensor = new Max31855();
+        isMODBUS = false;               // Juicyboard MODBUS specific
     } else if(sensor_type.compare("ad8495") == 0) {
         sensor = new AD8495();
+        isMODBUS = false;               // Juicyboard MODBUS specific
     } else if(sensor_type.compare("r1008") == 0) {
         // add support for R1008, JuicyBoard platform
         sensor = new R1008();
+        isMODBUS = false;               // Juicyboard MODBUS specific
     } else if(sensor_type.compare("pt100_e3d") == 0) {
         sensor = new PT100_E3D();
+        isMODBUS = false;               // Juicyboard MODBUS specific
+    } else if(sensor_type.compare("pxu") == 0){
+        sensor = new PXUsensor();
+        isMODBUS = true;                // Juicyboard MODBUS specific
+        this->readonly = false;         // MODBUS are independednt of heater pins
     } else {
         sensor = new TempSensor(); // A dummy implementation
+        isMODBUS = false;               // Juicyboard MODBUS specific
     }
     sensor->UpdateConfig(temperature_control_checksum, this->name_checksum);
 
@@ -205,7 +219,7 @@ void TemperatureControl::load_config()
     // sigma-delta output modulation
     this->o = 0;
 
-    if(!this->readonly) {
+    if((!this->readonly)&(!isMODBUS)) {
         // used to enable bang bang control of heater
         this->use_bangbang = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, bang_bang_checksum)->by_default(false)->as_bool();
         this->hysteresis = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, hysteresis_checksum)->by_default(2)->as_number();
@@ -217,7 +231,6 @@ void TemperatureControl::load_config()
         THEKERNEL->slow_ticker->attach( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, pwm_frequency_checksum)->by_default(2000)->as_number(), &heater_pin, &Pwm::on_tick);
     }
 
-
     // reading tick
     THEKERNEL->slow_ticker->attach( this->readings_per_second, this, &TemperatureControl::thermistor_read_tick );
     this->PIDdt = 1.0 / this->readings_per_second;
@@ -227,7 +240,7 @@ void TemperatureControl::load_config()
     setPIDi( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, i_factor_checksum)->by_default(0.3f)->as_number() );
     setPIDd( THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, d_factor_checksum)->by_default(200)->as_number() );
 
-    if(!this->readonly) {
+    if((!this->readonly)&(!isMODBUS)) {
         // set to the same as max_pwm by default
         this->i_max = THEKERNEL->config->value(temperature_control_checksum, this->name_checksum, i_max_checksum   )->by_default(this->heater_pin.max_pwm())->as_number();
     }
@@ -296,7 +309,8 @@ void TemperatureControl::on_gcode_received(void *argument)
                 gcode->stream->printf("Maximum temperature for %s(%d) is %f°C\n", this->designator.c_str(), this->pool_index, max_temp);
             }
 
-        } else if (gcode->m == 301) {
+        } else if ((gcode->m == 301)&(!isMODBUS)) {
+            // restrict MODBUS devices from smoothie autotune
             if (gcode->has_letter('S') && (gcode->get_value('S') == this->pool_index)) {
                 if (gcode->has_letter('P'))
                     setPIDp( gcode->get_value('P') );
@@ -350,8 +364,12 @@ void TemperatureControl::on_gcode_received(void *argument)
                 float v = gcode->get_value('S');
 
                 if (v == 0.0) {
-                    this->target_temperature = UNDEFINED;
-                    this->heater_pin.set((this->o = 0));
+                    if (isMODBUS)
+                        this->set_desired_temperature(0);       // Juicyboard PXU specific
+                    else{
+                        this->target_temperature = UNDEFINED;
+                        this->heater_pin.set((this->o = 0));
+                    }
                 } else {
                     this->set_desired_temperature(v);
                     // wait for temp to be reached, no more gcodes will be fetched until this is complete
@@ -361,7 +379,6 @@ void TemperatureControl::on_gcode_received(void *argument)
                             THEKERNEL->call_event(ON_HALT, nullptr);
                             return;
                         }
-
                         this->waiting = true; // on_second_tick will announce temps
                         while ( get_temperature() < target_temperature ) {
                             THEKERNEL->call_event(ON_IDLE, this);
@@ -453,6 +470,11 @@ void TemperatureControl::set_desired_temperature(float desired_temperature)
     else if (desired_temperature == 2.0F)
         desired_temperature = preset2;
 
+    // Juicyboard specific if fork here
+    if (isMODBUS){
+        sensor->set_temperature(desired_temperature);
+    }
+    
     float last_target_temperature= target_temperature;
     target_temperature = desired_temperature;
     if (desired_temperature <= 0.0F){
@@ -480,13 +502,15 @@ float TemperatureControl::get_temperature()
 uint32_t TemperatureControl::thermistor_read_tick(uint32_t dummy)
 {
     float temperature = sensor->get_temperature();
-    if(!this->readonly && target_temperature > 2) {
-        if (isinf(temperature) || temperature < min_temp || temperature > max_temp) {
-            this->temp_violated = true;
-            target_temperature = UNDEFINED;
-            heater_pin.set((this->o = 0));
-        } else {
-            pid_process(temperature);
+    if (!isMODBUS){
+        if(!this->readonly && target_temperature > 2) {
+            if (isinf(temperature) || temperature < min_temp || temperature > max_temp) {
+                this->temp_violated = true;
+                target_temperature = UNDEFINED;
+                heater_pin.set((this->o = 0));
+            } else {
+                pid_process(temperature);
+            }
         }
     }
 
@@ -549,8 +573,11 @@ void TemperatureControl::on_second_tick(void *argument)
 {
 
     // If waiting for a temperature to be reach, display it to keep host programs up to date on the progress
-    if (waiting)
+    if (waiting){
         THEKERNEL->streams->printf("%s:%3.1f /%3.1f @%d\n", designator.c_str(), get_temperature(), ((target_temperature <= 0) ? 0.0 : target_temperature), o);
+    }
+
+    sensor->pull_temperature();
 
     // Check whether or not there is a temperature runaway issue, if so stop everything and report it
     if(THEKERNEL->is_halted()) return;
@@ -562,8 +589,7 @@ void TemperatureControl::on_second_tick(void *argument)
     if(++tick != 0) return;
 
     if(this->target_temperature <= 0){ // If we are not trying to heat, state is NOT_HEATING
-        this->runaway_state = NOT_HEATING;
-
+        this->runaway_state = NOT_HEATING;    
     }else{
         float current_temperature= this->get_temperature();
         // heater is active
