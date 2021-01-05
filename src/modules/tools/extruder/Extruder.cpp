@@ -39,6 +39,7 @@
 #define en_pin_checksum                      CHECKSUM("en_pin")
 
 #define slot_num_checksum                    CHECKSUM("slot_num")
+#define inverted_checksum                    CHECKSUM("inverted")
 
 #define max_speed_checksum                   CHECKSUM("max_speed")
 #define x_offset_checksum                    CHECKSUM("x_offset")
@@ -100,10 +101,12 @@ void Extruder::config_load()
     en_pin.from_string(   THEKERNEL->config->value(extruder_checksum, this->identifier, en_pin_checksum            )->by_default("nc" )->as_string())->as_output();*/
 
     // Juicyware stepper motor pin identification
-    int motor_slot_num = THEKERNEL->config->value(extruder_checksum, this->identifier, slot_num_checksum   )->by_default(0)->as_int();    // get slot number from config file, example: "extruder.hotend.slot_num 6"
+    int motor_slot_num = THEKERNEL->config->value(extruder_checksum, this->identifier, slot_num_checksum)->by_default(0)->as_int();    // get slot number from config file, example: "extruder.hotend.slot_num 6"
+    bool motor_inverted = THEKERNEL->config->value(extruder_checksum, this->identifier, inverted_checksum)->by_default(false)->as_bool();    // get if extruder motor direction is inverted, example: "extruder.hotend.inverted true"
     MotorPins CurrentMotorPins = getMotorPins(motor_slot_num);
     step_pin.from_string(CurrentMotorPins.step_pin)->as_output();
     dir_pin.from_string(CurrentMotorPins.dir_pin)->as_output();
+    dir_pin.set_inverting(motor_inverted);
     en_pin.from_string(CurrentMotorPins.en_pin)->as_output();
 
     float steps_per_millimeter = THEKERNEL->config->value(extruder_checksum, this->identifier, steps_per_mm_checksum)->by_default(1)->as_number();
