@@ -1032,6 +1032,11 @@ void SimpleShell::md5sum_command( string parameters, StreamOutput *stream )
 // runs several types of test on the mechanisms
 void SimpleShell::test_command( string parameters, StreamOutput *stream)
 {
+    if(!THECONVEYOR->is_idle()) {
+        stream->printf("error: tests are not allowed while printing or busy\n");
+        return;
+    }
+
     AutoPushPop app; // this will save the state and restore it on exit
     string what = shift_parameter( parameters );
 
@@ -1171,6 +1176,13 @@ void SimpleShell::test_command( string parameters, StreamOutput *stream)
         }
 
         uint32_t sps= strtol(stepspersec.c_str(), NULL, 10);
+
+        if(what == "acc") {
+            // convert actuator units to steps
+            steps= lroundf(THEROBOT->actuators[a]->get_steps_per_mm() * steps);
+            // convert steps per unit to steps/sec
+            sps= lroundf(THEROBOT->actuators[a]->get_steps_per_mm() * sps);
+        }
         sps= std::max(sps, 1UL);
 
         uint32_t delayus= 1000000.0F / sps;
@@ -1186,11 +1198,57 @@ void SimpleShell::test_command( string parameters, StreamOutput *stream)
 
         //stream->printf("done\n");
 
+    }else if (what == "pulse") {
+        // issues a step pulse then waits then unsteps, for testing when stepper moves
+        string axis = shift_parameter( parameters );
+        string reps = shift_parameter( parameters );
+        if(axis.empty()) {
+            stream->printf("error: Need axis [iterations]\n");
+            return;
+        }
+
+        char ax= toupper(axis[0]);
+        uint8_t a= ax >= 'X' ? ax - 'X' : ax - 'A' + 3;
+
+        if(a > C_AXIS) {
+            stream->printf("error: axis must be x, y, z, a, b, c\n");
+            return;
+        }
+
+        if(a >= THEROBOT->get_number_registered_motors()) {
+            stream->printf("error: axis is out of range\n");
+            return;
+        }
+
+        int nreps= 1;
+        if(!reps.empty()) {
+            nreps= strtol(reps.c_str(), NULL, 10);
+        }
+
+        uint32_t delayms= 5000.0F; // step every five seconds
+        for(int s= 0;s<nreps;s++) {
+            if(THEKERNEL->is_halted()) break;
+            stream->printf("// leading edge\n");
+            THEROBOT->actuators[a]->step();
+            safe_delay_ms(delayms);
+            stream->printf("// trailing edge\n");
+            THEROBOT->actuators[a]->unstep();
+            if(THEKERNEL->is_halted()) break;
+            safe_delay_ms(delayms);
+        }
+
+        // reset the position based on current actuator position
+        THEROBOT->reset_position_from_current_actuator_position();
+
+        stream->printf("done\n");
+
     }else {
-        stream->printf("usage:\r\n test jog axis distance iterations [feedrate]\r\n");
-        stream->printf(" test square size iterations [feedrate]\r\n");
-        stream->printf(" test circle radius iterations [feedrate]\r\n");
-        stream->printf(" test raw axis steps steps/sec\r\n");
+        stream->printf("usage:\n test jog axis distance iterations [feedrate]\n");
+        stream->printf(" test square size iterations [feedrate]\n");
+        stream->printf(" test circle radius iterations [feedrate]\n");
+        stream->printf(" test raw axis steps steps/sec\n");
+        stream->printf(" test acc axis units units/sec\n");
+        stream->printf(" test pulse axis iterations\n");
     }
 }
 
@@ -1216,8 +1274,23 @@ void SimpleShell::jog(string parameters, StreamOutput *stream)
         return;
     }
 
+    bool cont_mode= false;
     while(!parameters.empty()) {
         string p= shift_parameter(parameters);
+
+        if(p.size() == 2 && p[0] == '-') {
+            // process option
+            switch(toupper(p[1])) {
+                case 'C':
+                    cont_mode= true;
+                    break;
+                default:
+                    stream->printf("error:illegal option %c\n", p[1]);
+                    return;
+            }
+            continue;
+        }
+
 
         char ax= toupper(p[0]);
         if(ax == 'F') {
@@ -1250,7 +1323,6 @@ void SimpleShell::jog(string parameters, StreamOutput *stream)
             }else{
                 rate_mm_s = std::min(rate_mm_s, THEROBOT->actuators[i]->get_max_rate());
             }
-            //hstream->printf("%d %f F%f\n", i, delta[i], rate_mm_s);
         }
     }
     if(!ok) {
@@ -1258,11 +1330,72 @@ void SimpleShell::jog(string parameters, StreamOutput *stream)
         return;
     }
 
-    //stream->printf("F%f\n", rate_mm_s*scale);
+    // There is a race condition where a quick press/release could send the ^Y before the $J -c is executed
+    // this would result in continuous movement, not a good thing.
+    // so check if stop request is true and abort if it is, this means we must leave stop request false after this
+    if(THEKERNEL->get_stop_request()) {
+        THEKERNEL->set_stop_request(false);
+        stream->printf("ok\n");
+        return;
+    }
 
-    THEROBOT->delta_move(delta, rate_mm_s*scale, n_motors);
-    // turn off queue delay and run it now
-    THECONVEYOR->force_queue();
+    if(cont_mode) {
+        // continuous jog mode
+        float fr= rate_mm_s*scale;
+        // calculate minimum distance to travel to accomodate acceleration and feedrate
+        float acc= THEROBOT->get_default_acceleration();
+        float t= fr/acc; // time to reach feed rate
+        float d= 0.5F * acc * powf(t, 2); // distance required to accelerate (or decelerate)
+
+        // we need to move at least this distance to reach full speed
+        for (int i = 0; i < n_motors; ++i) {
+            if(delta[i] != 0) {
+                delta[i]= d * (delta[i]<0?-1:1);
+            }
+        }
+        // stream->printf("distance: %f, time:%f, X%f Y%f Z%f, speed:%f\n", d, t, delta[0], delta[1], delta[2], fr);
+
+        // turn off any compensation transform so Z does not move as we jog
+        auto savect= THEROBOT->compensationTransform;
+        THEROBOT->reset_compensated_machine_position();
+
+        // feed three blocks that allow full acceleration, full speed and full deceleration
+        THECONVEYOR->set_hold(true);
+        THEROBOT->delta_move(delta, fr, n_motors); // accelerates upto speed
+        THEROBOT->delta_move(delta, fr, n_motors); // continues at full speed
+        THEROBOT->delta_move(delta, fr, n_motors); // decelerates to zero
+
+        // DEBUG
+        // THECONVEYOR->dump_queue();
+
+        // tell it to run the second block until told to stop
+        if(!THECONVEYOR->set_continuous_mode(true)) {
+            stream->printf("error:Not enough memory to run continuous mode\n");
+            return;
+        }
+
+        THECONVEYOR->set_hold(false);
+        THECONVEYOR->force_queue();
+
+        while(!THEKERNEL->get_stop_request()) {
+            THEKERNEL->call_event(ON_IDLE);
+            if(THEKERNEL->is_halted()) break;
+        }
+        THECONVEYOR->set_continuous_mode(false);
+        THEKERNEL->set_stop_request(false);
+        THECONVEYOR->wait_for_idle();
+
+        // reset the position based on current actuator position
+        THEROBOT->reset_position_from_current_actuator_position();
+        // restore compensationTransform
+        THEROBOT->compensationTransform= savect;
+        stream->printf("ok\n");
+
+    }else{
+        THEROBOT->delta_move(delta, rate_mm_s*scale, n_motors);
+        // turn off queue delay and run it now
+        THECONVEYOR->force_queue();
+    }
 }
 
 void SimpleShell::help_command( string parameters, StreamOutput *stream )
@@ -1283,7 +1416,6 @@ void SimpleShell::help_command( string parameters, StreamOutput *stream )
     stream->printf("reset - reset smoothie\r\n");
     stream->printf("dfu - enter dfu boot loader\r\n");
     stream->printf("break - break into debugger\r\n");
-    stream->printf("config-get [<configuration_source>] <configuration_setting>\r\n");
     stream->printf("config-set [<configuration_source>] <configuration_setting> <value>\r\n");
     stream->printf("get [pos|wcs|state|status|fk|ik]\r\n");
     stream->printf("get temp [bed|hotend]\r\n");

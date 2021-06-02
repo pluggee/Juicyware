@@ -10,6 +10,8 @@
 
 #include "mbed.h"
 #include "SoftSerial_Ticker.h"
+
+#include "Stream.h"
 /** A software serial implementation
  *
  */

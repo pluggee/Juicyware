@@ -53,6 +53,7 @@ Player::Player()
     this->reply_stream = nullptr;
     this->suspended= false;
     this->suspend_loops= 0;
+    this->abort_flag= false;
 }
 
 void Player::on_module_loaded()
@@ -75,10 +76,12 @@ void Player::on_module_loaded()
     this->leave_heaters_on = THEKERNEL->config->value(leave_heaters_on_suspend_checksum)->by_default(false)->as_bool();
 }
 
+// this can be called from on_idle so nothing downstream can call on_idle
 void Player::on_halt(void* argument)
 {
     if(argument == nullptr && this->playing_file ) {
-        abort_command("1", &(StreamOutput::NullStream));
+        // signal the on_main_loop() to abort next time it is called
+        abort_flag= true;
 	}
 
 	if(argument == nullptr && this->suspended) {
@@ -383,7 +386,10 @@ void Player::abort_command( string parameters, StreamOutput *stream )
     if(parameters.empty()) {
         // clear out the block queue, will wait until queue is empty
         // MUST be called in on_main_loop to make sure there are no blocked main loops waiting to put something on the queue
-        THEKERNEL->conveyor->flush_queue();
+        THECONVEYOR->flush_queue();
+
+        // now wait until the block queue has been flushed and motors have stopped
+        THECONVEYOR->wait_for_idle(true);
 
         // now the position will think it is at the last received pos, so we need to do FK to get the actuator position and reset the current position
         THEROBOT->reset_position_from_current_actuator_position();
@@ -393,6 +399,12 @@ void Player::abort_command( string parameters, StreamOutput *stream )
 
 void Player::on_main_loop(void *argument)
 {
+    if(abort_flag) {
+        abort_flag= false;
+        abort_command("1", &(StreamOutput::NullStream));
+        return;
+    }
+
     if(suspended && suspend_loops > 0) {
         // if we are suspended we need to allow main loop to cycle a few times then finish off the suspend processing
         if(--suspend_loops == 0) {
@@ -427,13 +439,21 @@ void Player::on_main_loop(void *argument)
                     continue;
                 }
                 if(len == 1) continue; // empty line
-
+                if(buf[len - 2] == '\r') {
+                    // \r\n terminated ignore \r
+                    len -=1;
+                    if(len == 1) continue; // empty line
+                }
                 if(this->current_stream != nullptr) {
                     this->current_stream->printf("%s", buf);
                 }
 
                 struct SerialMessage message;
-                message.message = buf;
+                if(buf[len-1] == '\n' || buf[len-1] == '\r') {
+                    message.message.assign(buf, len-1); // we do not want to include the \n
+                }else{
+                    message.message.assign(buf, len);
+                }
                 message.stream = this->current_stream == nullptr ? &(StreamOutput::NullStream) : this->current_stream;
 
                 // waits for the queue to have enough room
@@ -478,7 +498,7 @@ void Player::on_get_public_data(void *argument)
 
     } else if(pdr->second_element_is(get_progress_checksum)) {
         static struct pad_progress p;
-        if(file_size > 0 && playing_file) {
+        if(file_size > 0 && (playing_file || this->current_file_handler)) {
             p.elapsed_secs = this->elapsed_secs;
             float pcnt = (((float)file_size - (file_size - played_cnt)) * 100.0F) / file_size;
             p.percent_complete = roundf(pcnt);

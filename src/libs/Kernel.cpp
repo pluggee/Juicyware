@@ -29,6 +29,7 @@
 #include "Configurator.h"
 #include "SimpleShell.h"
 #include "TemperatureControlPublicAccess.h"
+#include "PlayerPublicAccess.h"
 
 #ifndef NO_TOOLS_LASER
 #include "Laser.h"
@@ -73,12 +74,14 @@ Kernel::Kernel()
     feed_hold = false;
     enable_feed_hold = false;
     bad_mcu= true;
+    stop_request= false;
 
     instance = this; // setup the Singleton instance of the kernel
 
     // serial first at fixed baud rate (DEFAULT_SERIAL_BAUD_RATE) so config can report errors to serial
     // Set to UART0, this will be changed to use the same UART as MRI if it's enabled
-    this->serial = new SerialConsole(USBTX, USBRX, DEFAULT_SERIAL_BAUD_RATE);
+    this->serial = new SerialConsole(0);
+    this->serial->init_uart(DEFAULT_SERIAL_BAUD_RATE);
 
     // Config next, but does not load cache yet
     this->config = new Config();
@@ -98,28 +101,25 @@ Kernel::Kernel()
     // Match up the SerialConsole to MRI UART. This makes it easy to use only one UART for both debug and actual commands.
     NVIC_SetPriorityGrouping(0);
 
-
 #if MRI_ENABLE != 0
     switch( __mriPlatform_CommUartIndex() ) {
         case 0:
-            this->serial = new(AHB0) SerialConsole(USBTX, USBRX, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
+            this->serial = new(AHB0) SerialConsole(0);
             break;
         case 1:
-            this->serial = new(AHB0) SerialConsole(  p13,   p14, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
+            this->serial = new(AHB0) SerialConsole(1);
             break;
         case 2:
-            this->serial = new(AHB0) SerialConsole(  p28,   p27, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
+            this->serial = new(AHB0) SerialConsole(2);
             break;
         case 3:
-            this->serial = new(AHB0) SerialConsole(   p9,   p10, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
+            this->serial = new(AHB0) SerialConsole(3);
             break;
     }
 #endif
-
-
     // default
     if(this->serial == NULL) {
-        this->serial = new(AHB0) SerialConsole(USBTX, USBRX, this->config->value(uart0_checksum, baud_rate_setting_checksum)->by_default(DEFAULT_SERIAL_BAUD_RATE)->as_number());
+        this->serial = new(AHB0) SerialConsole(0);
     }
 
     // Juicyware
@@ -246,7 +246,7 @@ std::string Kernel::get_query_string()
         // deal with the ABC axis (E will be A)
         for (int i = A_AXIS; i < robot->get_number_registered_motors(); ++i) {
             // current actuator position
-            n = snprintf(buf, sizeof(buf), ",%1.4f", robot->from_millimeters(robot->actuators[i]->get_current_position()));
+            n = snprintf(buf, sizeof(buf), ",%1.4f", robot->actuators[i]->get_current_position());
             if(n > sizeof(buf)) n= sizeof(buf);
             str.append(buf, n);
         }
@@ -267,7 +267,6 @@ std::string Kernel::get_query_string()
         if(n > sizeof(buf)) n= sizeof(buf);
         str.append(buf, n);
 
-
         // current Laser power
         #ifndef NO_TOOLS_LASER
             Laser *plaser= nullptr;
@@ -287,17 +286,19 @@ std::string Kernel::get_query_string()
         // return the last milestone if idle
         char buf[128];
         // machine position
-        Robot::wcs_t mpos = robot->get_axis_position();
-        size_t n = snprintf(buf, sizeof(buf), "%1.4f,%1.4f,%1.4f", robot->from_millimeters(std::get<X_AXIS>(mpos)), robot->from_millimeters(std::get<Y_AXIS>(mpos)), robot->from_millimeters(std::get<Z_AXIS>(mpos)));
+        int nmotors= robot->get_number_registered_motors();
+        float mpos[nmotors];
+        robot->get_axis_position(mpos, nmotors);
+        size_t n = snprintf(buf, sizeof(buf), "%1.4f,%1.4f,%1.4f", robot->from_millimeters(mpos[X_AXIS]), robot->from_millimeters(mpos[Y_AXIS]), robot->from_millimeters(mpos[Z_AXIS]));
         if(n > sizeof(buf)) n= sizeof(buf);
 
         str.append("|MPos:").append(buf, n);
 
 #if MAX_ROBOT_ACTUATORS > 3
         // deal with the ABC axis (E will be A)
-        for (int i = A_AXIS; i < robot->get_number_registered_motors(); ++i) {
-            // current actuator position
-            n = snprintf(buf, sizeof(buf), ",%1.4f", robot->from_millimeters(robot->actuators[i]->get_current_position()));
+        for (int i = A_AXIS; i < nmotors; ++i) {
+            // machine position
+            n = snprintf(buf, sizeof(buf), ",%1.4f", mpos[i]);
             if(n > sizeof(buf)) n= sizeof(buf);
             str.append(buf, n);
         }
@@ -333,6 +334,17 @@ std::string Kernel::get_query_string()
         }
     }
 
+    // if printing from SD card add progress
+    void *returned_data;
+    ok = PublicData::get_value(player_checksum, get_progress_checksum, &returned_data);
+    if (ok) {
+        struct pad_progress p =  *static_cast<struct pad_progress *>(returned_data);
+        char buf[32];
+        size_t n = snprintf(buf, sizeof(buf), "|SD:%lu,%u", p.elapsed_secs, p.percent_complete);
+        if(n > sizeof(buf)) n= sizeof(buf);
+        str.append(buf, n);
+    }
+
     str.append(">\n");
     return str;
 }
@@ -347,6 +359,16 @@ void Kernel::add_module(Module* module)
 void Kernel::register_for_event(_EVENT_ENUM id_event, Module *mod)
 {
     this->hooks[id_event].push_back(mod);
+}
+
+// This will stop the que and stop further commands, and stop motors
+// Optionally used before on_halt() is sent to do a quick stop
+// May be called from an ISR
+void Kernel::immediate_halt()
+{
+    this->halted = true;
+    conveyor->flush_queue(); // make sure no queued up codes get through
+    for(auto &a : robot->actuators) a->stop_moving();
 }
 
 // Call a specific event with an argument

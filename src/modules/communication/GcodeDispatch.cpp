@@ -140,19 +140,18 @@ try_again:
 
             bool sent_ok= false; // used for G1 optimization
             while(possible_command.size() > 0) {
-                // assumes G or M are always the first on the line
-                size_t nextcmd = possible_command.find_first_of("GM", 2);
-                string single_command;
-                if(nextcmd == string::npos) {
-                    single_command = possible_command;
-                    possible_command = "";
-                } else {
-                    single_command = possible_command.substr(0, nextcmd);
-                    possible_command = possible_command.substr(nextcmd);
-                }
-
-
                 if(!uploading || upload_stream != new_message.stream) {
+                    // assumes G or M are always the first on the line
+                    size_t nextcmd = possible_command.find_first_of("GM", 2);
+                    string single_command;
+                    if(nextcmd == string::npos) {
+                        single_command = possible_command;
+                        possible_command = "";
+                    } else {
+                        single_command = possible_command.substr(0, nextcmd);
+                        possible_command = possible_command.substr(nextcmd);
+                    }
+
                     // Prepare gcode for dispatch
                     Gcode *gcode = new Gcode(single_command, new_message.stream);
 
@@ -268,9 +267,10 @@ try_again:
                                 return;
 
                             case 115: { // M115 Get firmware version and capabilities
+                                delete gcode;
                                 Version vers;
 
-                                new_message.stream->printf("FIRMWARE_NAME:Smoothieware, FIRMWARE_URL:http%%3A//smoothieware.org, X-SOURCE_CODE_URL:https://github.com/Smoothieware/Smoothieware, FIRMWARE_VERSION:%s, X-FIRMWARE_BUILD_DATE:%s, X-SYSTEM_CLOCK:%ldMHz, X-AXES:%d, X-GRBL_MODE:%d", vers.get_build(), vers.get_build_date(), SystemCoreClock / 1000000, MAX_ROBOT_ACTUATORS, THEKERNEL->is_grbl_mode());
+                                new_message.stream->printf("FIRMWARE_NAME:Smoothieware, FIRMWARE_URL:http%%3A//plugg.ee, X-SOURCE_CODE_URL:https://github.com/pluggee/Juicyware, FIRMWARE_VERSION:%s, PROTOCOL_VERSION:1.0, X-FIRMWARE_BUILD_DATE:%s, X-SYSTEM_CLOCK:%ldMHz, X-AXES:%d, X-GRBL_MODE:%d, X-ARCS:1", vers.get_build(), vers.get_build_date(), SystemCoreClock / 1000000, MAX_ROBOT_ACTUATORS, THEKERNEL->is_grbl_mode());
 
                                 #ifdef CNC
                                 new_message.stream->printf(", X-CNC:1");
@@ -285,7 +285,7 @@ try_again:
                                 #endif
 
                                 if(THEKERNEL->is_bad_mcu()) {
-                                    new_message.stream->printf(", X-WARNING:This is not a sanctioned board and may be unreliable and even dangerous. This MCU is deprecated, and cannot guarantee proper function\n");
+                                    new_message.stream->printf(", X-WARNING:deprecated_MCU");
                                 }
                                 new_message.stream->printf("\nok\n");
                                 return;
@@ -427,7 +427,7 @@ try_again:
 
                 } else {
                     // we are uploading and it is the upload stream so so save it
-                    if(single_command.substr(0, 3) == "M29") {
+                    if(possible_command.substr(0, 3) == "M29") {
                         // done uploading, close file
                         fclose(upload_fd);
                         upload_fd = NULL;
@@ -435,27 +435,27 @@ try_again:
                         upload_filename.clear();
                         upload_stream= nullptr;
                         new_message.stream->printf("Done saving file.\r\nok\r\n");
-                        continue;
+                        break;
                     }
 
                     if(upload_fd == NULL) {
                         // error detected writing to file so discard everything until it stops
                         new_message.stream->printf("ok\r\n");
-                        continue;
+                        break;
                     }
 
-                    single_command.append("\n");
-                    if(fwrite(single_command.c_str(), 1, single_command.size(), upload_fd) != single_command.size()) {
+                    possible_command.append("\n");
+                    if(fwrite(possible_command.c_str(), 1, possible_command.size(), upload_fd) != possible_command.size()) {
                         // error writing to file
                         new_message.stream->printf("Error:error writing to file.\r\n");
                         fclose(upload_fd);
                         upload_fd = NULL;
-                        continue;
 
                     } else {
                          new_message.stream->printf("ok\r\n");
                         //printf("uploading file write ok\n");
                     }
+                    break;
                 }
             }
 
